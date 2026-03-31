@@ -15,7 +15,7 @@ from dataline.core.state import (
     add_step,
     create_initial_state,
     render_for_agent,
-    update_hypothesis,
+    update_judge_guidance,
 )
 
 
@@ -132,17 +132,17 @@ class TestJudgeView:
         assert "Latest Step Output" in rendered
         assert "result_0: computed value" in rendered
 
-    def test_includes_hypothesis(self):
+    def test_includes_judge_guidance(self):
         state = _make_state_with_steps(1)
-        state = update_hypothesis(state, "Total should be around 50000")
+        state = update_judge_guidance(state, "Total should be around 50000")
         rendered = render_for_agent(state, "judge")
-        assert "Current Hypothesis" in rendered
+        assert "Prior Guidance" in rendered
         assert "Total should be around 50000" in rendered
 
     def test_no_hypothesis_when_empty(self):
         state = _make_state_with_steps(1)
         rendered = render_for_agent(state, "judge")
-        assert "Current Hypothesis" not in rendered
+        assert "Prior Guidance" not in rendered
 
     def test_includes_error_for_failed_step(self):
         manifest = _make_manifest()
@@ -180,10 +180,10 @@ class TestGuidanceHypothesisIntegration:
         """Judge's guidance_for_next_step should be usable as the next hypothesis."""
         state = _make_state_with_steps(1)
         guidance = "Next: filter by card_scheme='GlobalCard' and compute weighted average"
-        state = update_hypothesis(state, guidance)
-        assert state.current_hypothesis == guidance
+        state = update_judge_guidance(state, guidance)
+        assert state.judge_guidance == guidance
 
         # Planner should see this guidance
         rendered = render_for_agent(state, "planner")
         assert "GlobalCard" in rendered
-        assert "Current Hypothesis" in rendered
+        assert "Judge Guidance" in rendered

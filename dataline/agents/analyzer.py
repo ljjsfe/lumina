@@ -1,4 +1,9 @@
-"""Analyzer agent: deep data profiling via code execution."""
+"""Analyzer agent: deep data profiling via code execution.
+
+Returns two separate outputs:
+- data_profile: column statistics, distributions, sample rows
+- domain_rules: extracted from documentation files (manual, README, knowledge)
+"""
 
 from __future__ import annotations
 
@@ -11,28 +16,66 @@ from ..core.types import Manifest
 from ..profiler.manifest import manifest_to_json
 
 
-def analyze(manifest: Manifest, llm: LLMClient, sandbox: Sandbox) -> str:
-    """Generate and execute profiling code, return semantic data profile.
+def analyze(manifest: Manifest, llm: LLMClient, sandbox: Sandbox) -> tuple[str, str]:
+    """Generate and execute profiling code, return (data_profile, domain_rules).
 
     Strategy:
-    1. LLM generates profiling code → execute
-    2. If execution fails, retry with a simpler prompt
-    3. If all retries fail, use deterministic fallback (manifest summary)
+    1. Extract domain rules from documentation files (deterministic, no LLM)
+    2. LLM generates profiling code for structured data → execute
+    3. If execution fails, retry with a simpler prompt
+    4. If all retries fail, use deterministic fallback (manifest summary)
     """
+    # Step 1: Extract domain rules from documentation files (independent channel)
+    domain_rules = _extract_domain_rules(manifest)
+
+    # Step 2: Profile structured data
     manifest_json = manifest_to_json(manifest)
 
-    # Attempt 1: Full LLM-generated profiling
     profile = _attempt_llm_profile(manifest_json, llm, sandbox)
     if profile:
-        return profile
+        return profile, domain_rules
 
-    # Attempt 2: Retry with simplified prompt (common failure: encoding, large files)
     profile = _attempt_simple_profile(manifest_json, llm, sandbox)
     if profile:
-        return profile
+        return profile, domain_rules
 
-    # Attempt 3: Deterministic fallback — always produces something useful
-    return _deterministic_fallback(manifest_json)
+    return _deterministic_fallback(manifest_json), domain_rules
+
+
+def _extract_domain_rules(manifest: Manifest) -> str:
+    """Extract full content from documentation files as domain rules.
+
+    Documentation files (manual.md, README, knowledge.md, etc.) contain
+    formulas, definitions, and business rules that agents need to follow.
+    These are preserved in full — they are HIGH PRIORITY information.
+
+    This is deterministic (no LLM cost) and creates an independent channel
+    so domain knowledge is never squeezed out by statistical profiles.
+    """
+    doc_extensions = {".md", ".txt", ".rst"}
+    doc_parts: list[str] = []
+
+    for entry in manifest.entries:
+        if entry.file_type not in ("markdown", "pdf", "docx"):
+            continue
+
+        # Get text content from profiler's text_preview
+        text = entry.summary.get("text_preview", "")
+        if not text:
+            continue
+
+        # Read full file if text_preview was truncated
+        file_path = entry.file_path
+        if entry.summary.get("char_count", 0) > len(text):
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    text = f.read()
+            except (OSError, UnicodeDecodeError):
+                pass  # fall back to text_preview
+
+        doc_parts.append(f"=== {entry.file_path} ===\n{text}")
+
+    return "\n\n".join(doc_parts)
 
 
 def _attempt_llm_profile(manifest_json: str, llm: LLMClient, sandbox: Sandbox) -> str:
@@ -67,7 +110,7 @@ def _attempt_simple_profile(manifest_json: str, llm: LLMClient, sandbox: Sandbox
 2. For CSV files: use pandas with encoding='utf-8' first, then 'latin-1' as fallback. Print: shape, column names with dtypes, null counts, and for each column: unique count, min, max, and top 5 most frequent values.
 3. For JSON files: load with json module. Print: type (list/dict), length, and if list of dicts, print all keys and for each key show unique value count and top 5 values.
 4. For SQLite: print table names, schemas, row counts, and 3 sample rows per table.
-5. For text files (md/txt): print first 500 characters.
+5. For text files (md/txt): skip — already handled separately.
 6. Wrap each file in try/except to ensure one file failure doesn't stop the whole script.
 7. Print "=== <filename> ===" header before each file summary.
 """

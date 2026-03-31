@@ -20,6 +20,7 @@ You are evaluating the progress of a data analysis task. You must assess BOTH su
 - Is the aggregation correct? (e.g., question asks for "average" but code computes "sum")
 - Do intermediate row counts make sense? (e.g., filtering returns 0 rows → likely wrong filter)
 - If a WARNING appears in stdout ("No matches", "0 rows"), the step likely failed logically
+- **If Domain Rules are provided above, verify the code follows them exactly** — check formulas, null/empty value handling, and field semantics against the documented rules
 
 If you detect a logic error, choose "backtrack" or "continue" with specific correction guidance.
 

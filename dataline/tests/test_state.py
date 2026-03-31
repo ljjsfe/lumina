@@ -9,7 +9,7 @@ from dataline.core.state import (
     render_for_agent,
     summarize_step_output,
     truncate_to_step,
-    update_hypothesis,
+    update_judge_guidance,
 )
 from dataline.core.types import (
     AnalysisState,
@@ -194,13 +194,16 @@ class TestRenderForAgent:
         state = add_step(state, _make_step(0, "Load data", "100 rows loaded"), "Loaded 100 rows")
         return state
 
-    def test_planner_includes_question_and_manifest(self):
+    def test_planner_partial_view(self):
+        """Planner render is PARTIAL — only execution state, no question/manifest."""
         state = self._build_state()
         rendered = render_for_agent(state, "planner")
 
-        assert "What is the total?" in rendered
-        assert "Data Sources" in rendered
+        # Planner view should include execution state
         assert "Key Findings" in rendered
+        assert "Completed Steps" in rendered
+        # Question/manifest NOT included (planner.py template handles those)
+        assert "Data Sources" not in rendered
 
     def test_coder_includes_variables(self):
         state = self._build_state()
@@ -262,14 +265,14 @@ class TestSummarizeStepOutput:
         assert result == "First line"
 
 
-# --- update_hypothesis ---
+# --- update_judge_guidance ---
 
 
 class TestUpdateHypothesis:
     def test_updates_immutably(self):
         manifest = _make_manifest()
         state = create_initial_state("t", "q", manifest, "p")
-        state2 = update_hypothesis(state, "Values increase over time")
+        state2 = update_judge_guidance(state, "Values increase over time")
 
-        assert state.current_hypothesis == ""
-        assert state2.current_hypothesis == "Values increase over time"
+        assert state.judge_guidance == ""
+        assert state2.judge_guidance == "Values increase over time"

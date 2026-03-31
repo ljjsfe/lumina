@@ -28,8 +28,8 @@ You are a data analyst. Write Python code that loads and deeply profiles each fi
 - For columns with ≤ 30 distinct values: show ALL values with counts
 
 ### Text files (Markdown/PDF/DOCX)
-- Print the FULL content if < 2000 chars
-- If longer, print: headings structure, first 1000 chars, and any tables/lists found
+- SKIP these — documentation files are handled separately via a dedicated channel.
+- Focus your profiling on structured data files only.
 
 ## Critical: Value distributions matter!
 The downstream agent needs to understand what values MEAN. For example:

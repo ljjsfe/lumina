@@ -21,30 +21,48 @@ def plan_next(
 ) -> PlanStep:
     """Plan the next single step based on question and prior results.
 
-    If state is provided, uses structured context rendering.
+    If state is provided, builds context from state (no duplication).
     Otherwise falls back to legacy steps_done formatting.
     """
     prompt_path = Path(__file__).parent.parent / "prompts" / "planner.md"
     template = prompt_path.read_text(encoding="utf-8")
 
     if state is not None:
-        context = render_for_agent(state, "planner")
-        system_prompt = (
-            template
-            .replace("{question}", state.question)
-            .replace("{manifest_json}", state.manifest_summary)
-            .replace("{data_profile}", state.data_profile_summary[:10000])
-            .replace("{steps_done_summary}", context)
-        )
+        # State path: build full context, inject once via {context}
+        context_parts = []
+        context_parts.append(f"## Question\n{state.question}")
+
+        if state.judge_guidance:
+            context_parts.append(
+                f"## Judge Guidance (MUST ADDRESS in this step)\n"
+                f"> **{state.judge_guidance}**"
+            )
+
+        context_parts.append(f"## Data Sources\n{state.manifest_summary}")
+
+        if state.domain_rules:
+            context_parts.append(f"## Domain Rules (from documentation)\n{state.domain_rules}")
+
+        if state.data_profile_summary:
+            context_parts.append(f"## Data Profile\n{state.data_profile_summary}")
+
+        # Execution state from render_for_agent (findings + completed steps only)
+        exec_context = render_for_agent(state, "planner")
+        if exec_context:
+            context_parts.append(exec_context)
+
+        context = "\n\n".join(context_parts)
+        system_prompt = template.replace("{context}", context)
     else:
-        steps_summary = _format_steps(steps_done)
-        system_prompt = (
-            template
-            .replace("{question}", question)
-            .replace("{manifest_json}", manifest_json)
-            .replace("{data_profile}", data_profile[:10000])
-            .replace("{steps_done_summary}", steps_summary)
-        )
+        # Legacy path: build context from individual arguments
+        context_parts = []
+        context_parts.append(f"## Question\n{question}")
+        context_parts.append(f"## Data Sources\n{manifest_json}")
+        if data_profile:
+            context_parts.append(f"## Data Profile\n{data_profile}")
+        context_parts.append(f"## Steps Completed\n{_format_steps(steps_done)}")
+        context = "\n\n".join(context_parts)
+        system_prompt = template.replace("{context}", context)
 
     response = llm.chat(system_prompt, "Plan the next step now.")
 

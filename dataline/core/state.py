@@ -1,13 +1,23 @@
 """AnalysisState management: create, update, render for each agent role.
 
 All functions are pure — they return new AnalysisState instances (immutable).
-Inspired by DS-STAR (accumulative context), OpenClaw (3-tier memory),
-and anchored iterative summarization (compress verified findings).
+
+Information priority (high → low):
+- Domain rules, formulas, definitions → full content
+- Column statistics, distributions → full content (API has 200K context)
+- Raw data samples → brief (like LIMIT 10)
+- Recent step outputs → full content
+- Older step outputs → 1-line summary (already in completed_steps)
 """
 
 from __future__ import annotations
 
 from ..core.types import AnalysisState, Manifest, StepRecord
+
+# Safety cap for single stdout field to prevent extreme cases (e.g., printing 1M rows).
+# 200K token context ≈ 800K chars. Each agent call is independent, so no sharing.
+# This cap is generous — only catches pathological output.
+_STDOUT_SAFETY_CAP = 100_000
 
 
 def create_initial_state(
@@ -15,23 +25,25 @@ def create_initial_state(
     question: str,
     manifest: Manifest,
     data_profile: str,
+    domain_rules: str = "",
 ) -> AnalysisState:
     """Initialize state from profiler + analyzer outputs."""
     return AnalysisState(
         task_id=task_id,
         question=question,
         manifest_summary=compress_manifest(manifest),
-        data_profile_summary=data_profile[:10000],
+        data_profile_summary=data_profile,
+        domain_rules=domain_rules,
         key_findings=(),
         variables_in_scope=(),
-        current_hypothesis="",
+        judge_guidance="",
         completed_steps=(),
         full_step_details=(),
     )
 
 
 def compress_manifest(manifest: Manifest) -> str:
-    """Compress manifest to column names + types only. No sample values."""
+    """Compress manifest to schema info. Full content for documentation files."""
     parts: list[str] = []
 
     for entry in manifest.entries:
@@ -66,11 +78,9 @@ def compress_manifest(manifest: Manifest) -> str:
                 rows = sheet.get("row_count", "?")
                 parts.append(f"{file_label}/{sheet.get('name', '?')} [{rows} rows]: {cols}")
 
-        # Text/image/other — include generous preview (domain knowledge lives here)
+        # Text/image/other — full content (domain knowledge lives here)
         else:
-            preview = s.get("text_preview", "") if s.get("text_preview") else ""
-            if preview and len(preview) > 8000:
-                preview = preview[:8000] + f"\n... ({s.get('char_count', len(preview))} chars total)"
+            preview = s.get("text_preview", "") or ""
             parts.append(f"{file_label}:\n{preview}" if preview else file_label)
 
     # Cross-source relations
@@ -97,7 +107,6 @@ def add_step(
     # Detect variables saved to disk (pickle files)
     new_vars = state.variables_in_scope
     if "pickle.dump" in step.code or ".to_pickle" in step.code:
-        # Extract pickle filename from code heuristically
         import re
         pkl_matches = re.findall(r'["\']([^"\']+\.pkl)["\']', step.code)
         for pkl in pkl_matches:
@@ -109,24 +118,26 @@ def add_step(
         question=state.question,
         manifest_summary=state.manifest_summary,
         data_profile_summary=state.data_profile_summary,
+        domain_rules=state.domain_rules,
         key_findings=state.key_findings + (finding_summary,),
         variables_in_scope=new_vars,
-        current_hypothesis=state.current_hypothesis,
+        judge_guidance=state.judge_guidance,
         completed_steps=state.completed_steps + (step_line,),
         full_step_details=state.full_step_details + (step,),
     )
 
 
-def update_hypothesis(state: AnalysisState, hypothesis: str) -> AnalysisState:
-    """Return new state with updated hypothesis."""
+def update_judge_guidance(state: AnalysisState, guidance: str) -> AnalysisState:
+    """Return new state with updated judge guidance."""
     return AnalysisState(
         task_id=state.task_id,
         question=state.question,
         manifest_summary=state.manifest_summary,
         data_profile_summary=state.data_profile_summary,
+        domain_rules=state.domain_rules,
         key_findings=state.key_findings,
         variables_in_scope=state.variables_in_scope,
-        current_hypothesis=hypothesis,
+        judge_guidance=guidance,
         completed_steps=state.completed_steps,
         full_step_details=state.full_step_details,
     )
@@ -139,43 +150,55 @@ def truncate_to_step(state: AnalysisState, step_index: int) -> AnalysisState:
         question=state.question,
         manifest_summary=state.manifest_summary,
         data_profile_summary=state.data_profile_summary,
+        domain_rules=state.domain_rules,
         key_findings=state.key_findings[:step_index],
         variables_in_scope=state.variables_in_scope,  # keep all — pickles still on disk
-        current_hypothesis=state.current_hypothesis,
+        judge_guidance=state.judge_guidance,
         completed_steps=state.completed_steps[:step_index],
         full_step_details=state.full_step_details[:step_index],
     )
 
 
+def _cap(text: str) -> str:
+    """Apply safety cap to prevent pathological output from blowing up context."""
+    if len(text) > _STDOUT_SAFETY_CAP:
+        return text[:_STDOUT_SAFETY_CAP] + f"\n... (truncated at {_STDOUT_SAFETY_CAP} chars)"
+    return text
+
+
 def render_for_agent(state: AnalysisState, agent_role: str) -> str:
     """Render state into a context string tailored per agent role.
 
-    Different agents need different views:
-    - Planner: global view (findings + history + manifest + hypothesis)
-    - Coder: narrow view (manifest + variables + last 2 steps full output)
-    - Verifier: evaluation view (findings + history + last step output)
-    - Router: decision view (same as verifier)
-    - Debugger: error context (manifest + profile, no history)
-    - Finalizer: everything (full step details with max output)
+    Information priority: domain rules > data profile > step outputs.
+    No aggressive truncation — each API call has its own 200K context window.
+    Only _cap() guards against pathological stdout.
+
+    Planner view is PARTIAL — only returns steps/findings/guidance,
+    because planner.md template already provides question/manifest/profile.
+
+    All other agents get full self-contained context.
     """
     sections: list[str] = []
 
     if agent_role == "planner":
-        sections.append(f"## Question\n{state.question}")
-        sections.append(f"## Data Sources\n{state.manifest_summary}")
-        if state.data_profile_summary:
-            sections.append(f"## Data Profile\n{state.data_profile_summary[:10000]}")
+        # PARTIAL view: planner.py template handles question/manifest/profile.
+        # We only provide execution state + control signal here.
+        if state.judge_guidance:
+            sections.append(
+                f"## Judge Guidance (MUST ADDRESS in this step)\n"
+                f"> **{state.judge_guidance}**"
+            )
         if state.key_findings:
             sections.append("## Key Findings So Far\n" + "\n".join(f"- {f}" for f in state.key_findings))
         if state.completed_steps:
             sections.append("## Completed Steps\n" + "\n".join(state.completed_steps))
-        if state.current_hypothesis:
-            sections.append(f"## Current Hypothesis\n{state.current_hypothesis}")
 
     elif agent_role == "coder":
         sections.append(f"## Data Sources\n{state.manifest_summary}")
+        if state.domain_rules:
+            sections.append(f"## Domain Rules (from documentation)\n{state.domain_rules}")
         if state.data_profile_summary:
-            sections.append(f"## Data Profile (sample rows, value distributions)\n{state.data_profile_summary[:10000]}")
+            sections.append(f"## Data Profile (sample rows, value distributions)\n{_cap(state.data_profile_summary)}")
         if state.variables_in_scope:
             vars_text = "\n".join(f"- {name}: {desc}" for name, desc in state.variables_in_scope)
             sections.append(f"## Available Variables (in TEMP_DIR)\n{vars_text}")
@@ -184,13 +207,15 @@ def render_for_agent(state: AnalysisState, agent_role: str) -> str:
         if recent:
             parts = []
             for s in recent:
-                stdout = s.result.stdout[:4000] if s.result.stdout else "(no output)"
+                stdout = _cap(s.result.stdout) if s.result.stdout else "(no output)"
                 parts.append(f"Step {s.step_index} ({s.plan.step_description}):\n{stdout}")
             sections.append("## Recent Results\n" + "\n\n".join(parts))
 
     elif agent_role == "judge":
         sections.append(f"## Question\n{state.question}")
         sections.append(f"## Data Sources\n{state.manifest_summary}")
+        if state.domain_rules:
+            sections.append(f"## Domain Rules (use to verify code logic)\n{state.domain_rules}")
         if state.key_findings:
             sections.append("## Key Findings\n" + "\n".join(f"- {f}" for f in state.key_findings))
         if state.completed_steps:
@@ -198,15 +223,15 @@ def render_for_agent(state: AnalysisState, agent_role: str) -> str:
         # Last step with code + output for logic auditing
         if state.full_step_details:
             last = state.full_step_details[-1]
-            code_preview = last.code[:2000] if last.code else "(no code)"
-            stdout = last.result.stdout[:4000] if last.result.stdout else "(no output)"
-            stderr = last.result.stderr[:500] if last.result.return_code != 0 else ""
-            sections.append(f"## Latest Step Code\n```python\n{code_preview}\n```")
+            code_text = last.code or "(no code)"
+            stdout = _cap(last.result.stdout) if last.result.stdout else "(no output)"
+            stderr = last.result.stderr if last.result.return_code != 0 else ""
+            sections.append(f"## Latest Step Code\n```python\n{code_text}\n```")
             sections.append(f"## Latest Step Output\n{stdout}")
             if stderr:
                 sections.append(f"## Latest Step Error\n{stderr}")
-        if state.current_hypothesis:
-            sections.append(f"## Current Hypothesis\n{state.current_hypothesis}")
+        if state.judge_guidance:
+            sections.append(f"## Prior Guidance\n{state.judge_guidance}")
 
     elif agent_role in ("verifier", "router"):
         sections.append(f"## Question\n{state.question}")
@@ -214,24 +239,27 @@ def render_for_agent(state: AnalysisState, agent_role: str) -> str:
             sections.append("## Key Findings\n" + "\n".join(f"- {f}" for f in state.key_findings))
         if state.completed_steps:
             sections.append("## Completed Steps\n" + "\n".join(state.completed_steps))
-        # Last step with more output detail
         if state.full_step_details:
             last = state.full_step_details[-1]
-            stdout = last.result.stdout[:4000] if last.result.stdout else "(no output)"
+            stdout = _cap(last.result.stdout) if last.result.stdout else "(no output)"
             sections.append(f"## Latest Step Output\n{stdout}")
 
     elif agent_role == "debugger":
-        sections.append(f"## Data Sources\n{state.manifest_summary[:6000]}")
+        sections.append(f"## Data Sources\n{state.manifest_summary}")
+        if state.domain_rules:
+            sections.append(f"## Domain Rules\n{state.domain_rules}")
         if state.data_profile_summary:
-            sections.append(f"## Data Profile (sample rows, value distributions)\n{state.data_profile_summary[:10000]}")
+            sections.append(f"## Data Profile\n{_cap(state.data_profile_summary)}")
 
     elif agent_role == "finalizer":
         sections.append(f"## Question\n{state.question}")
-        # Full step details with generous output truncation
+        if state.domain_rules:
+            sections.append(f"## Domain Rules\n{state.domain_rules}")
+        # Full step details — no truncation
         if state.full_step_details:
             parts = []
             for s in state.full_step_details:
-                stdout = s.result.stdout[:8000] if s.result.stdout else "(no output)"
+                stdout = _cap(s.result.stdout) if s.result.stdout else "(no output)"
                 parts.append(
                     f"Step {s.step_index}: {s.plan.step_description}\n"
                     f"  Output:\n{stdout}"
@@ -244,6 +272,8 @@ def render_for_agent(state: AnalysisState, agent_role: str) -> str:
         # Fallback: provide everything
         sections.append(f"## Question\n{state.question}")
         sections.append(f"## Data Sources\n{state.manifest_summary}")
+        if state.domain_rules:
+            sections.append(f"## Domain Rules\n{state.domain_rules}")
         if state.completed_steps:
             sections.append("## Completed Steps\n" + "\n".join(state.completed_steps))
 
@@ -255,7 +285,6 @@ def summarize_step_output(stdout: str, max_len: int = 100) -> str:
     if not stdout or not stdout.strip():
         return "no output"
 
-    # Take first non-empty line as summary
     lines = [line.strip() for line in stdout.strip().split("\n") if line.strip()]
     if not lines:
         return "empty output"

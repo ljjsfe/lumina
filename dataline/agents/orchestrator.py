@@ -14,7 +14,7 @@ from ..core.state import (
     create_initial_state,
     summarize_step_output,
     truncate_to_step,
-    update_hypothesis,
+    update_judge_guidance,
 )
 from ..core.tracer import TaskTracer
 from ..core.tracing_llm import TracingLLMClient
@@ -104,20 +104,21 @@ def run_task(
             "coverage_signal": "complete" if manifest.entries else "empty",
         }
 
-        # 2. Analyze (deep profiling via code)
+        # 2. Analyze (deep profiling via code + domain rule extraction)
         with tracer.span("analyzer"):
             _log(trace, "analyzer", "Running deep data analysis")
-            data_profile = analyzer.analyze(manifest, traced_llm, sandbox)
-            _log(trace, "analyzer", f"Profile length: {len(data_profile)} chars")
+            data_profile, domain_rules = analyzer.analyze(manifest, traced_llm, sandbox)
+            _log(trace, "analyzer", f"Profile length: {len(data_profile)} chars, domain rules: {len(domain_rules)} chars")
 
         obs["analyzer"] = {
             "profile_length_chars": len(data_profile),
+            "domain_rules_length_chars": len(domain_rules),
             "analysis_success": len(data_profile) > 50,
             "profile_quality": "rich" if len(data_profile) > 500 else ("sparse" if len(data_profile) > 50 else "failed"),
         }
 
         # 3. Initialize AnalysisState
-        state = create_initial_state(task_id, question, manifest, data_profile)
+        state = create_initial_state(task_id, question, manifest, data_profile, domain_rules)
 
         # Keep legacy steps_done for TaskResult output
         steps_done: list[StepRecord] = []
@@ -136,7 +137,7 @@ def run_task(
 
             # Update hypothesis with judge guidance from prior iteration
             if judge_guidance:
-                state = update_hypothesis(state, judge_guidance)
+                state = update_judge_guidance(state, judge_guidance)
 
             # Plan next step
             with tracer.span("planner", metadata={"iteration": iteration}):

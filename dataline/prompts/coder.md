@@ -154,28 +154,11 @@ if null_counts.any():
 df = df.dropna(subset=["key_column"])  # Or fillna as appropriate
 ```
 
-### 10. For fee/rule tables: null/None or empty list `[]` means "applies to all values" (no restriction)
-Per domain convention (check manual.md): when a fee/rule field is `null`/`None` or `[]`, it applies to ALL values of that field.
-This applies to ALL field types: list fields (account_type, aci, mcc), boolean fields (is_credit), and string fields.
-```python
-def matches_field(rule_val, target_val):
-    """Return True if rule applies (null/[] = no restriction) or target matches."""
-    if rule_val is None or rule_val == []:  # null or empty list = applies to all
-        return True
-    if isinstance(rule_val, list):
-        return target_val in rule_val
-    return rule_val == target_val
-
-# Example: filter fees for GlobalCard, credit transactions (is_credit=True)
-# WRONG: excludes is_credit=None rules which ALSO apply to credit transactions
-wrong = [r for r in fees if r["card_scheme"] == "GlobalCard" and r["is_credit"] is True]
-
-# RIGHT: include is_credit=None (applies to all) AND is_credit=True
-correct = [r for r in fees if r["card_scheme"] == "GlobalCard"
-           and matches_field(r["is_credit"], True)
-           and matches_field(r["account_type"], merchant_account_type)
-           and matches_field(r["aci"], transaction_aci)]
-```
+### 10. Follow domain rules from documentation
+If domain rules are provided in context (from manual.md, README, or knowledge files), follow them exactly for:
+- Formulas and calculations (use the documented formula, do not guess)
+- Field semantics (what null/empty values mean, how to match/filter)
+- Business logic (how records relate, what counts as a match)
 
 ## Output
 Return ONLY the Python code, wrapped in ```python ... ```. No explanation.

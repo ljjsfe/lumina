@@ -133,20 +133,24 @@ class TaskScore:
 class AnalysisState:
     """Structured state passed between agents. Replaces raw list[StepRecord].
 
-    Designed as 3-tier memory (inspired by DS-STAR + OpenClaw):
-    - Tier 1 (always in context): manifest_summary, key_findings, completed_steps
-    - Tier 2 (agent-selective): full_step_details (only for Finalizer)
-    - Tier 3 (disk): pickle files in TEMP_DIR (accessed by generated code)
+    Information layers (by priority):
+    - Layer 1 (task definition): question, manifest_summary — never changes
+    - Layer 2 (domain knowledge): domain_rules — extracted from manual/README, independent channel
+    - Layer 3 (data understanding): data_profile_summary — column stats, distributions
+    - Layer 4 (execution state): key_findings, completed_steps, variables — updated each step
+    - Layer 5 (control signal): judge_guidance — steering from judge to planner
+    - Layer 6 (raw detail): full_step_details — complete step records, disk-backed via pickles
     """
     task_id: str
     question: str
-    manifest_summary: str                           # column names + types only (compressed)
-    data_profile_summary: str                       # analyzer output, truncated
+    manifest_summary: str                           # column names + types (compressed schema)
+    data_profile_summary: str                       # analyzer output: stats, distributions
+    domain_rules: str = ""                          # extracted from manual/README/knowledge files
     key_findings: tuple[str, ...] = ()              # 1-line verified findings
     variables_in_scope: tuple[tuple[str, str], ...] = ()  # (pickle_name, description)
-    current_hypothesis: str = ""                    # what we're investigating
+    judge_guidance: str = ""                        # steering instruction from judge for next iteration
     completed_steps: tuple[str, ...] = ()           # 1-line per step
-    full_step_details: tuple[StepRecord, ...] = ()  # raw data, only for Finalizer
+    full_step_details: tuple[StepRecord, ...] = ()  # raw data for Finalizer + Judge
 
 
 @dataclass(frozen=True)
