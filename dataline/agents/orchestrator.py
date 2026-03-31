@@ -1,4 +1,10 @@
-"""Orchestrator: main loop that coordinates all agents."""
+"""Orchestrator: main loop that coordinates all agents.
+
+Pipeline:
+  Profiler → Analyzer → QuestionAnalyzer → Loop(Planner → Coder → Sandbox → Judge) → Finalizer
+
+Workspace files provide observability and smart context retrieval.
+"""
 
 from __future__ import annotations
 
@@ -26,9 +32,10 @@ from ..core.types import (
     SandboxResult,
     StepRecord,
 )
+from ..core.workspace import Workspace
 from ..profiler import manifest as profiler
 from ..profiler.manifest import manifest_to_json
-from . import analyzer, planner, coder, judge, debugger, finalizer
+from . import analyzer, planner, coder, judge, debugger, finalizer, question_analyzer
 
 
 @dataclass
@@ -58,11 +65,7 @@ def run_task(
     benchmark: str = "kdd",
     guidelines: str = "",
 ) -> TaskResult:
-    """Run the full agent pipeline on a single task.
-
-    Args:
-        output_dir: If provided, writes real-time status.json + trace_detailed.json here.
-    """
+    """Run the full agent pipeline on a single task."""
     start_time = time.time()
     trace: list[dict] = []
     max_iterations = config.get("agent", {}).get("max_iterations", 8)
@@ -81,9 +84,13 @@ def run_task(
         max_memory_mb=config.get("sandbox", {}).get("max_memory_mb", 1024),
     )
 
+    # Workspace: file-based state, persisted to output_dir/workspace/
+    workspace = Workspace(temp_dir=sandbox.temp_dir, output_dir=output_dir)
+
     obs: dict[str, Any] = {
         "profiler": {},
         "analyzer": {},
+        "question_analyzer": {},
         "iterations": [],
         "final": {},
     }
@@ -108,7 +115,11 @@ def run_task(
         with tracer.span("analyzer"):
             _log(trace, "analyzer", "Running deep data analysis")
             data_profile, domain_rules = analyzer.analyze(manifest, traced_llm, sandbox)
-            _log(trace, "analyzer", f"Profile length: {len(data_profile)} chars, domain rules: {len(domain_rules)} chars")
+            _log(trace, "analyzer", f"Profile: {len(data_profile)} chars, domain rules: {len(domain_rules)} chars")
+
+        # Write to workspace for file-based access
+        workspace.write_domain_rules(domain_rules)
+        workspace.write_data_profile(data_profile)
 
         obs["analyzer"] = {
             "profile_length_chars": len(data_profile),
@@ -117,8 +128,21 @@ def run_task(
             "profile_quality": "rich" if len(data_profile) > 500 else ("sparse" if len(data_profile) > 50 else "failed"),
         }
 
-        # 3. Initialize AnalysisState
+        # 3. Initialize AnalysisState (still used for compatibility)
         state = create_initial_state(task_id, question, manifest, data_profile, domain_rules)
+
+        # 4. QuestionAnalyzer: pre-execution strategic analysis (GSD discuss-phase)
+        with tracer.span("question_analyzer"):
+            _log(trace, "question_analyzer", "Analyzing question strategy")
+            analysis_plan = question_analyzer.analyze_question(
+                question, state.manifest_summary, workspace, traced_llm,
+            )
+            _log(trace, "question_analyzer", f"Analysis plan: {len(analysis_plan)} chars")
+
+        obs["question_analyzer"] = {
+            "plan_length_chars": len(analysis_plan),
+            "plan_generated": len(analysis_plan) > 50,
+        }
 
         # Keep legacy steps_done for TaskResult output
         steps_done: list[StepRecord] = []
@@ -128,16 +152,16 @@ def run_task(
         # Track judge guidance for planner
         judge_guidance = ""
 
-        # 4. Incremental plan-code-verify loop
+        # 5. Incremental plan-code-verify loop
         for iteration in range(max_iterations):
             tracer.set_iteration(iteration, max_iterations)
             _log(trace, "iteration", f"--- Iteration {iteration} ---")
             iter_obs: dict[str, Any] = {"iteration": iteration}
-            prev_findings_count = len(state.key_findings)
 
-            # Update hypothesis with judge guidance from prior iteration
+            # Update judge guidance from prior iteration
             if judge_guidance:
                 state = update_judge_guidance(state, judge_guidance)
+                workspace.write_judge_guidance(judge_guidance)
 
             # Plan next step
             with tracer.span("planner", metadata={"iteration": iteration}):
@@ -184,6 +208,9 @@ def run_task(
                         code = fixed_code
                         break
 
+            # Write step to workspace (observability)
+            workspace.write_step(iteration, code, result.stdout)
+
             iter_obs["code_success"] = result.return_code == 0
             iter_obs["debug_retries"] = debug_retries
             iter_obs["exec_time_ms"] = result.execution_time_ms
@@ -201,6 +228,7 @@ def run_task(
             # Update state with compressed finding
             finding = summarize_step_output(result.stdout)
             state = add_step(state, step_record, finding)
+            workspace.append_progress(iteration, plan_step.step_description, finding)
 
             # Judge: combined sufficiency check + routing + guidance (single LLM call)
             with tracer.span("judge", metadata={"iteration": iteration}):
@@ -221,8 +249,6 @@ def run_task(
 
             if verdict.action == "finish":
                 if iteration < min_iterations - 1:
-                    # Override: force at least min_iterations before allowing finish.
-                    # LLM judges often approve too early on first step.
                     _log(trace, "orchestrator",
                          f"Overriding premature finish at iteration {iteration} "
                          f"(min_iterations={min_iterations}). Forcing continue.")
@@ -245,13 +271,11 @@ def run_task(
                 state = truncate_to_step(state, truncate_to)
                 backtracks_used += 1
                 stagnation_count = 0
-                judge_guidance = ""  # reset guidance after backtrack
+                judge_guidance = ""
                 _log(trace, "judge", f"Backtracked to step {truncate_to}")
             else:
-                # Stagnation detection: two signals
-                # 1. Step completely failed (code error even after retries)
+                # Stagnation detection
                 step_failed = result.return_code != 0
-                # 2. Judge repeating same guidance (going in circles)
                 guidance_repeated = (
                     prev_guidance
                     and verdict.guidance_for_next_step
@@ -268,7 +292,7 @@ def run_task(
                     _log(trace, "orchestrator", f"Early stop: {stagnation_count} stagnation signals")
                     break
 
-        # 5. Finalize
+        # 6. Finalize
         with tracer.span("finalizer"):
             _log(trace, "finalizer", "Formatting answer")
             answer = finalizer.format_answer(question, steps_done, traced_llm, state=state, benchmark=benchmark, guidelines=guidelines)
@@ -292,6 +316,8 @@ def run_task(
             "stagnation_stops": stagnation_count >= stagnation_threshold,
         }
 
+        # Persist workspace for post-run observability
+        workspace.persist()
         tracer.finish(success=True)
 
         return TaskResult(
@@ -311,6 +337,7 @@ def run_task(
         elapsed = time.time() - start_time
         _log(trace, "error", str(e))
         obs["final"] = {"success": False, "error": str(e)}
+        workspace.persist()  # persist even on failure for debugging
         tracer.finish(success=False, error=str(e))
         return TaskResult(
             task_id=task_id,

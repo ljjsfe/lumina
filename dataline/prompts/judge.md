@@ -29,10 +29,13 @@ If you detect a logic error, choose "backtrack" or "continue" with specific corr
 - [ ] ALL parts of the question are answered (not just some)
 - [ ] Results contain actual **computed/filtered data** (not just schema, metadata, or data structure descriptions)
 - [ ] Numbers are **specific and final** (not intermediate counts or exploratory statistics)
+- [ ] Numbers preserve **full precision** — do NOT accept rounded values unless the question explicitly asks for rounding
 - [ ] If the question asks for a list, the list is **complete** (not truncated or sampled)
 - [ ] If the question asks for a calculation, the **final number** is explicitly shown in stdout
 - [ ] The output **directly answers** the question (not just shows related data)
 - [ ] Intermediate row counts are reasonable (not 0, not suspiciously small/large)
+- [ ] All returned records have **complete data** for the requested fields (no null/NaN in required columns unless the question explicitly allows missing data)
+- [ ] If Domain Rules exist, the code **strictly follows** documented formulas, field semantics, and matching conventions
 
 ## Critical Anti-Patterns — Do NOT choose "finish" if:
 

@@ -15,7 +15,7 @@ Format the final answer from the completed analysis.
 6. Remove extra whitespace from string values.
 7. If the question asks for a single value, still format as: {"columns": {"answer": [value]}}
 8. Use the LAST successful step's output as the primary data source. Earlier steps may have been exploratory.
-9. Preserve the exact precision of computed numbers (do not round unless the question asks for rounding).
+9. CRITICAL: Preserve the EXACT precision of computed numbers. Copy the number exactly as it appears in the step output. Do NOT round, truncate, or reformat numbers. Example: if output says "0.31555732286030097", your answer must be "0.31555732286030097", NOT "0.32" or "0.316".
 10. If a step produced a WARNING about 0 rows or empty results, do NOT use that step's output — look for earlier valid results.
 
 ## Output (JSON only, no other text)
