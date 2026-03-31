@@ -1,0 +1,22 @@
+Format the final answer from the completed analysis.
+
+## Question
+{question}
+
+## Analysis results (all steps and their outputs)
+{steps_summary}
+
+## Rules
+1. Extract the answer from the step results above.
+2. Format as a JSON object representing a table: {"columns": {"col_name": [values]}}
+3. Column names should match what the question asks for. Use the exact wording from the question when possible.
+4. Include ALL requested data. If the question asks for ID, name, and value — include all three columns.
+5. Clean numbers: no $ or % unless the question specifically asks for formatted values.
+6. Remove extra whitespace from string values.
+7. If the question asks for a single value, still format as: {"columns": {"answer": [value]}}
+8. Use the LAST successful step's output as the primary data source. Earlier steps may have been exploratory.
+9. Preserve the exact precision of computed numbers (do not round unless the question asks for rounding).
+10. If a step produced a WARNING about 0 rows or empty results, do NOT use that step's output — look for earlier valid results.
+
+## Output (JSON only, no other text)
+{"columns": {"column_name_1": [val1, val2, ...], "column_name_2": [val1, val2, ...]}}

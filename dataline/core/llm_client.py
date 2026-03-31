@@ -1,0 +1,180 @@
+"""Unified LLM adapter. Kimi (Moonshot) primary, Anthropic secondary."""
+
+from __future__ import annotations
+
+import os
+import time
+from dataclasses import dataclass
+from typing import Any
+
+from .types import LLMUsage
+
+
+@dataclass(frozen=True)
+class LLMConfig:
+    provider: str
+    model: str
+    api_key: str
+    base_url: str | None = None
+    max_tokens: int = 8192
+    temperature: float = 0.0
+
+
+class LLMClient:
+    """Single interface for all LLM providers."""
+
+    def __init__(self, config: LLMConfig):
+        self._config = config
+        self._client = self._build_client()
+        self._total_usage = {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
+
+    def _build_client(self) -> Any:
+        if self._config.provider in ("moonshot", "openai", "deepseek"):
+            from openai import OpenAI
+            return OpenAI(
+                api_key=self._config.api_key,
+                base_url=self._config.base_url,
+            )
+        elif self._config.provider == "anthropic":
+            import anthropic
+            return anthropic.Anthropic(api_key=self._config.api_key)
+        else:
+            raise ValueError(f"Unknown provider: {self._config.provider}")
+
+    def chat(self, system: str, user: str) -> str:
+        """Single-turn chat. Returns text response."""
+        response, _ = self.chat_with_usage(system, user)
+        return response
+
+    def chat_with_usage(self, system: str, user: str) -> tuple[str, LLMUsage]:
+        """Chat and return (response_text, usage_info)."""
+        start = time.time()
+
+        if self._config.provider in ("moonshot", "openai", "deepseek"):
+            return self._chat_openai_compat(system, user, start)
+        elif self._config.provider == "anthropic":
+            return self._chat_anthropic(system, user, start)
+        else:
+            raise ValueError(f"Unknown provider: {self._config.provider}")
+
+    def _chat_openai_compat(self, system: str, user: str, start: float) -> tuple[str, LLMUsage]:
+        """OpenAI-compatible API (Moonshot/Kimi, OpenAI, DeepSeek)."""
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = self._client.chat.completions.create(
+                    model=self._config.model,
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                    max_tokens=self._config.max_tokens,
+                    temperature=self._config.temperature,
+                )
+                latency_ms = int((time.time() - start) * 1000)
+                usage = response.usage
+                input_tokens = usage.prompt_tokens if usage else 0
+                output_tokens = usage.completion_tokens if usage else 0
+                cost = self._estimate_cost(input_tokens, output_tokens)
+
+                self._total_usage["input_tokens"] += input_tokens
+                self._total_usage["output_tokens"] += output_tokens
+                self._total_usage["cost_usd"] += cost
+
+                return (
+                    response.choices[0].message.content or "",
+                    LLMUsage(
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        cost_usd=cost,
+                        latency_ms=latency_ms,
+                        provider=self._config.provider,
+                        model=self._config.model,
+                    ),
+                )
+            except Exception as e:
+                if attempt < max_retries - 1 and self._is_retryable(e):
+                    time.sleep(2 ** attempt)
+                    continue
+                raise
+
+        raise RuntimeError("Exhausted retries")
+
+    def _chat_anthropic(self, system: str, user: str, start: float) -> tuple[str, LLMUsage]:
+        """Anthropic native API."""
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = self._client.messages.create(
+                    model=self._config.model,
+                    system=system,
+                    messages=[{"role": "user", "content": user}],
+                    max_tokens=self._config.max_tokens,
+                    temperature=self._config.temperature,
+                )
+                latency_ms = int((time.time() - start) * 1000)
+                input_tokens = response.usage.input_tokens
+                output_tokens = response.usage.output_tokens
+                cost = self._estimate_cost(input_tokens, output_tokens)
+
+                self._total_usage["input_tokens"] += input_tokens
+                self._total_usage["output_tokens"] += output_tokens
+                self._total_usage["cost_usd"] += cost
+
+                text = "".join(
+                    block.text for block in response.content if hasattr(block, "text")
+                )
+                return (
+                    text,
+                    LLMUsage(
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        cost_usd=cost,
+                        latency_ms=latency_ms,
+                        provider=self._config.provider,
+                        model=self._config.model,
+                    ),
+                )
+            except Exception as e:
+                if attempt < max_retries - 1 and self._is_retryable(e):
+                    time.sleep(2 ** attempt)
+                    continue
+                raise
+
+        raise RuntimeError("Exhausted retries")
+
+    def _estimate_cost(self, input_tokens: int, output_tokens: int) -> float:
+        """Rough cost estimate. Updated as pricing changes."""
+        rates = {
+            "moonshot": (0.012, 0.012),     # per 1K tokens (CNY, rough USD equiv)
+            "anthropic": (0.003, 0.015),     # Sonnet
+            "openai": (0.005, 0.015),        # GPT-4o
+            "deepseek": (0.0014, 0.0028),    # DeepSeek V3
+        }
+        input_rate, output_rate = rates.get(self._config.provider, (0.01, 0.01))
+        return (input_tokens * input_rate + output_tokens * output_rate) / 1000
+
+    @staticmethod
+    def _is_retryable(error: Exception) -> bool:
+        err_str = str(error).lower()
+        return any(kw in err_str for kw in ("rate_limit", "rate limit", "429", "timeout", "503"))
+
+    @property
+    def total_usage(self) -> dict:
+        return dict(self._total_usage)
+
+
+def create_client_from_config(config: dict) -> LLMClient:
+    """Create LLMClient from config.yaml llm section."""
+    llm_cfg = config["llm"]
+    api_key = os.environ.get(llm_cfg.get("api_key_env", ""), "")
+    return LLMClient(
+        LLMConfig(
+            provider=llm_cfg["provider"],
+            model=llm_cfg["model"],
+            api_key=api_key,
+            base_url=llm_cfg.get("base_url"),
+            max_tokens=llm_cfg.get("max_tokens", 8192),
+            temperature=llm_cfg.get("temperature", 0.0),
+        )
+    )

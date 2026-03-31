@@ -1,0 +1,31 @@
+llm:
+  provider: moonshot
+  model: kimi-k2.5  # Latest Kimi state-of-art model
+  base_url: https://api.moonshot.cn/v1
+  api_key_env: MOONSHOT_API_KEY
+  max_tokens: 8192
+  temperature: 1.0  # kimi-k2.5 only accepts temperature=1
+
+agent:
+  max_iterations: 8
+  max_retries: 2
+  backtrack_limit: 3
+  stagnation_threshold: 2
+
+sandbox:
+  timeout_seconds: 120
+  max_memory_mb: 1024
+
+synthesizer:
+  mode: kdd
+  normalize_numbers: true
+
+eval:
+  kdd_gold_dir: data/demo
+  dabstep_dir: data/dabstep
+
+batch:
+  # Kimi Tier 2: concurrent 100, RPM 500, TPM 3M/min
+  # At parallel 10: ~12 RPM, ~147K TPM — well within limits
+  # Wall clock for 20 dev tasks: ~23 min
+  parallel: 10

@@ -1,0 +1,33 @@
+# Data (large, not code)
+data/
+results/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+
+# Environment
+.env
+.venv/
+venv/
+
+# IDE / OS
+.DS_Store
+.vscode/
+*.swp
+
+# Logs & temp
+logs/
+*.log
+
+# Monitoring scripts (one-off)
+monitor.py
+monitor.sh
+check_dev_progress.sh
+run_dev_eval_complete.py
+
+# Claude internal
+.claude/
