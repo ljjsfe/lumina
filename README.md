@@ -1,6 +1,6 @@
 # Argos
 
-A CLI agent that answers natural language questions over multi-format data files.
+An autonomous agent that answers natural language questions over multi-format data files.
 
 Give it a folder of CSVs, databases, JSON, Excel, PDFs, and Markdown — ask a question in plain English — get a structured answer table.
 
