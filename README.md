@@ -1,4 +1,4 @@
-# Argos
+# Lumina
 
 An autonomous agent that answers natural language questions over multi-format data files.
 
@@ -50,8 +50,8 @@ Profiler → Analyzer → QuestionAnalyzer → Loop(Planner → Coder → Sandbo
 ## Setup
 
 ```bash
-git clone https://github.com/ljjsfe/argos.git
-cd argos
+git clone https://github.com/ljjsfe/lumina.git
+cd lumina
 pip install -r requirements.txt
 
 # Set your LLM API key

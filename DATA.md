@@ -1,6 +1,6 @@
 # Data Sources
 
-Argos does not bundle any benchmark data. Download the datasets below and place them in `data/` before running evaluations.
+Lumina does not bundle any benchmark data. Download the datasets below and place them in `data/` before running evaluations.
 
 ---
 
