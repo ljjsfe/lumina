@@ -71,6 +71,6 @@ def _format_prior_results(steps: list[StepRecord]) -> str:
         return "No prior steps."
     parts = []
     for s in steps:
-        stdout = s.result.stdout[:800] if s.result.stdout else "(no output)"
+        stdout = s.result.stdout[:100_000] if s.result.stdout else "(no output)"
         parts.append(f"Step {s.step_index} ({s.plan.step_description}):\n{stdout}")
     return "\n\n".join(parts)

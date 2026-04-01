@@ -129,7 +129,7 @@ class TestJudgeView:
     def test_includes_latest_step_output(self):
         state = _make_state_with_steps(1)
         rendered = render_for_agent(state, "judge")
-        assert "Latest Step Output" in rendered
+        assert "Step 0 Output" in rendered
         assert "result_0: computed value" in rendered
 
     def test_includes_judge_guidance(self):
@@ -160,7 +160,7 @@ class TestJudgeView:
         )
         state = add_step(state, step, "Error in computation")
         rendered = render_for_agent(state, "judge")
-        assert "Latest Step Error" in rendered
+        assert "Step 0 Error" in rendered
         assert "ValueError: bad" in rendered
 
     def test_differs_from_verifier_view(self):

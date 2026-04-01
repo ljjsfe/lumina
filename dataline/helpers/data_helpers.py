@@ -91,6 +91,7 @@ def describe_data(obj: object, name: str = "data", max_items: int = 5) -> str:
     """Print human-readable structure description of any data object.
 
     Use this FIRST when loading a new data source to understand its format.
+    Robust against mixed-type columns, nested JSON, list-valued fields.
 
     Args:
         obj: Any Python object (list, dict, DataFrame, Series, scalar, etc.)
@@ -102,74 +103,113 @@ def describe_data(obj: object, name: str = "data", max_items: int = 5) -> str:
     """
     lines: list[str] = []
 
-    if isinstance(obj, pd.DataFrame):
-        lines.append(f"{name}: DataFrame ({obj.shape[0]:,} rows x {obj.shape[1]} cols)")
-        for col in obj.columns:
-            dtype = obj[col].dtype
-            nunique = obj[col].nunique()
-            null_pct = obj[col].isna().mean() * 100
-            sample = obj[col].dropna().head(3).tolist()
-            extra = f", {null_pct:.0f}% null" if null_pct > 0 else ""
-            lines.append(f"  {col}: {dtype} ({nunique:,} unique{extra}) samples={sample}")
+    try:
+        if isinstance(obj, pd.DataFrame):
+            lines.append(f"{name}: DataFrame ({obj.shape[0]:,} rows x {obj.shape[1]} cols)")
+            for col in obj.columns:
+                try:
+                    dtype = obj[col].dtype
+                    null_pct = obj[col].isna().mean() * 100
+                    extra = f", {null_pct:.0f}% null" if null_pct > 0 else ""
+                    # nunique can fail on unhashable types (list, dict values)
+                    try:
+                        nunique = obj[col].nunique()
+                    except TypeError:
+                        nunique = "?"
+                    # Safe sample: repr each value to handle any type
+                    sample_vals = obj[col].dropna().head(3)
+                    sample = [_safe_repr(v) for v in sample_vals]
+                    lines.append(f"  {col}: {dtype} ({nunique} unique{extra}) samples={sample}")
+                except Exception as e:
+                    lines.append(f"  {col}: (inspect error: {type(e).__name__}: {e})")
 
-    elif isinstance(obj, pd.Series):
-        lines.append(f"{name}: Series ({len(obj):,} items, dtype={obj.dtype})")
-        lines.append(f"  unique={obj.nunique()}, null={obj.isna().sum()}")
-        lines.append(f"  samples={obj.dropna().head(max_items).tolist()}")
+        elif isinstance(obj, pd.Series):
+            lines.append(f"{name}: Series ({len(obj):,} items, dtype={obj.dtype})")
+            try:
+                lines.append(f"  unique={obj.nunique()}, null={obj.isna().sum()}")
+            except TypeError:
+                lines.append(f"  unique=?, null={obj.isna().sum()}")
+            sample = [_safe_repr(v) for v in obj.dropna().head(max_items)]
+            lines.append(f"  samples={sample}")
 
-    elif isinstance(obj, list):
-        lines.append(f"{name}: list ({len(obj):,} items)")
-        if len(obj) == 0:
-            lines.append("  (empty)")
-        elif isinstance(obj[0], dict):
-            keys = list(obj[0].keys())
-            lines.append(f"  Each item is a dict with {len(keys)} keys: {keys}")
-            for key in keys[:15]:
-                values = [item.get(key) for item in obj[: min(50, len(obj))]]
-                types = set(type(v).__name__ for v in values if v is not None)
-                type_str = "/".join(sorted(types)) if types else "null"
-                if any(isinstance(v, list) for v in values):
-                    non_empty = [v for v in values if isinstance(v, list) and len(v) > 0]
-                    empty_count = sum(1 for v in values if isinstance(v, list) and len(v) == 0)
-                    if non_empty:
-                        sample_inner = non_empty[0][:3]
-                        lines.append(f"  {key}: list (empty={empty_count}/{len(values)}) sample={sample_inner}")
-                    else:
-                        lines.append(f"  {key}: list (all empty)")
-                else:
-                    non_null = [v for v in values if v is not None]
-                    unique_vals = set(str(v) for v in non_null[:50])
-                    null_count = sum(1 for v in values if v is None)
-                    if len(unique_vals) <= max_items:
-                        lines.append(f"  {key}: {type_str} values={sorted(unique_vals)} null={null_count}")
-                    else:
-                        sample = [str(v) for v in non_null[:3]]
-                        lines.append(f"  {key}: {type_str} ({len(unique_vals)}+ unique) samples={sample} null={null_count}")
-        else:
-            sample = obj[:max_items]
-            types = set(type(v).__name__ for v in obj[:50])
-            lines.append(f"  item types: {'/'.join(sorted(types))}")
-            lines.append(f"  samples: {sample}")
-
-    elif isinstance(obj, dict):
-        lines.append(f"{name}: dict ({len(obj)} keys)")
-        for key in list(obj.keys())[:15]:
-            val = obj[key]
-            val_type = type(val).__name__
-            if isinstance(val, (list, dict)):
-                val_preview = f"{val_type}({len(val)} items)"
-            elif isinstance(val, str) and len(val) > 50:
-                val_preview = f"str({len(val)} chars): '{val[:50]}...'"
+        elif isinstance(obj, list):
+            lines.append(f"{name}: list ({len(obj):,} items)")
+            if len(obj) == 0:
+                lines.append("  (empty)")
+            elif isinstance(obj[0], dict):
+                # Collect keys from first few items (not just first — keys may vary)
+                all_keys: dict[str, int] = {}
+                for item in obj[:20]:
+                    if isinstance(item, dict):
+                        for k in item:
+                            all_keys[k] = all_keys.get(k, 0) + 1
+                keys = list(all_keys.keys())
+                lines.append(f"  Each item is a dict with up to {len(keys)} keys: {keys[:30]}")
+                if len(keys) > 30:
+                    lines.append(f"  ... and {len(keys) - 30} more keys")
+                for key in keys[:15]:
+                    try:
+                        values = [item.get(key) for item in obj[:min(50, len(obj))] if isinstance(item, dict)]
+                        types = set(type(v).__name__ for v in values if v is not None)
+                        type_str = "/".join(sorted(types)) if types else "null"
+                        null_count = sum(1 for v in values if v is None)
+                        if any(isinstance(v, (list, dict)) for v in values):
+                            # Nested structure — show type and size, not content
+                            nested_sizes = [len(v) for v in values if isinstance(v, (list, dict))]
+                            avg_size = sum(nested_sizes) / max(len(nested_sizes), 1)
+                            lines.append(f"  {key}: {type_str} (nested, avg size={avg_size:.0f}) null={null_count}")
+                        else:
+                            non_null = [v for v in values if v is not None]
+                            unique_vals = set(_safe_repr(v) for v in non_null[:50])
+                            if len(unique_vals) <= max_items:
+                                lines.append(f"  {key}: {type_str} values={sorted(unique_vals)} null={null_count}")
+                            else:
+                                sample = [_safe_repr(v) for v in non_null[:3]]
+                                lines.append(f"  {key}: {type_str} ({len(unique_vals)}+ unique) samples={sample} null={null_count}")
+                    except Exception as e:
+                        lines.append(f"  {key}: (inspect error: {type(e).__name__})")
             else:
-                val_preview = repr(val)
-            lines.append(f"  {key}: {val_preview}")
+                sample = [_safe_repr(v) for v in obj[:max_items]]
+                types = set(type(v).__name__ for v in obj[:50])
+                lines.append(f"  item types: {'/'.join(sorted(types))}")
+                lines.append(f"  samples: {sample}")
 
-    else:
-        lines.append(f"{name}: {type(obj).__name__} = {repr(obj)[:200]}")
+        elif isinstance(obj, dict):
+            lines.append(f"{name}: dict ({len(obj)} keys)")
+            for key in list(obj.keys())[:15]:
+                try:
+                    val = obj[key]
+                    val_type = type(val).__name__
+                    if isinstance(val, (list, dict)):
+                        val_preview = f"{val_type}({len(val)} items)"
+                    elif isinstance(val, str) and len(val) > 50:
+                        val_preview = f"str({len(val)} chars): '{val[:50]}...'"
+                    else:
+                        val_preview = _safe_repr(val)
+                    lines.append(f"  {key}: {val_preview}")
+                except Exception:
+                    lines.append(f"  {key}: (inspect error)")
+
+        else:
+            lines.append(f"{name}: {type(obj).__name__} = {repr(obj)[:200]}")
+
+    except Exception as e:
+        lines.append(f"{name}: (describe_data failed: {type(e).__name__}: {e})")
 
     result = "\n".join(lines)
     print(result)
     return result
+
+
+def _safe_repr(val: object, max_len: int = 80) -> str:
+    """Safe repr that never raises and caps length."""
+    try:
+        r = repr(val)
+        if len(r) > max_len:
+            return r[:max_len] + "..."
+        return r
+    except Exception:
+        return f"<{type(val).__name__}>"
 
 
 # --- DataFrame inspection ---
@@ -179,22 +219,39 @@ def describe_df(df: pd.DataFrame, name: str = "df") -> str:
     """Produce a compact summary of a DataFrame for printing.
 
     Includes: shape, dtypes, null counts, and first 3 rows.
-    Much more info-dense than raw df.head().
+    Robust against mixed-type columns and wide DataFrames.
     """
-    lines = [
-        f"=== {name}: {df.shape[0]} rows × {df.shape[1]} cols ===",
-        "",
-        "Columns:",
-    ]
-    for col in df.columns:
-        dtype = df[col].dtype
-        nulls = df[col].isna().sum()
-        nunique = df[col].nunique()
-        null_info = f", {nulls} nulls" if nulls > 0 else ""
-        lines.append(f"  {col} ({dtype}, {nunique} unique{null_info})")
+    try:
+        lines = [
+            f"=== {name}: {df.shape[0]} rows × {df.shape[1]} cols ===",
+            "",
+            "Columns:",
+        ]
+        for col in df.columns:
+            try:
+                dtype = df[col].dtype
+                nulls = df[col].isna().sum()
+                try:
+                    nunique = df[col].nunique()
+                except TypeError:
+                    nunique = "?"
+                null_info = f", {nulls} nulls" if nulls > 0 else ""
+                lines.append(f"  {col} ({dtype}, {nunique} unique{null_info})")
+            except Exception as e:
+                lines.append(f"  {col} (inspect error: {type(e).__name__})")
 
-    lines.append(f"\nFirst 3 rows:\n{df.head(3).to_string()}")
-    return "\n".join(lines)
+        # Cap head output for wide or long-valued DataFrames
+        try:
+            head_str = df.head(3).to_string(max_colwidth=60)
+            if len(head_str) > 3000:
+                head_str = head_str[:3000] + "\n... (truncated)"
+            lines.append(f"\nFirst 3 rows:\n{head_str}")
+        except Exception:
+            lines.append("\nFirst 3 rows: (display error)")
+
+        return "\n".join(lines)
+    except Exception as e:
+        return f"=== {name}: describe_df failed: {type(e).__name__}: {e} ==="
 
 
 # --- Column detection ---

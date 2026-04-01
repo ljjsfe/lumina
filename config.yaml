@@ -8,6 +8,7 @@ llm:
 
 agent:
   max_iterations: 8
+  min_iterations: 1
   max_retries: 2
   backtrack_limit: 3
   stagnation_threshold: 2

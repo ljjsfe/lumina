@@ -102,6 +102,8 @@ agent:
 - **Immutable state** — frozen dataclasses throughout, no in-place mutation
 - **File-based workspace** — every step's code and output persisted for observability
 - **Domain rules** — documentation files (MD/PDF/DOCX) get their own high-priority channel, not mixed with data profiles
+- **Adaptive iterations** — judge decides when to stop; no forced minimum steps
+- **Semantic stagnation detection** — word-level Jaccard similarity prevents false early exits
 
 ---
 

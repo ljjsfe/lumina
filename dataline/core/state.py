@@ -220,16 +220,17 @@ def render_for_agent(state: AnalysisState, agent_role: str) -> str:
             sections.append("## Key Findings\n" + "\n".join(f"- {f}" for f in state.key_findings))
         if state.completed_steps:
             sections.append("## Completed Steps\n" + "\n".join(state.completed_steps))
-        # Last step with code + output for logic auditing
+        # Last 3 steps with code + output for cross-step reasoning
         if state.full_step_details:
-            last = state.full_step_details[-1]
-            code_text = last.code or "(no code)"
-            stdout = _cap(last.result.stdout) if last.result.stdout else "(no output)"
-            stderr = last.result.stderr if last.result.return_code != 0 else ""
-            sections.append(f"## Latest Step Code\n```python\n{code_text}\n```")
-            sections.append(f"## Latest Step Output\n{stdout}")
-            if stderr:
-                sections.append(f"## Latest Step Error\n{stderr}")
+            recent = state.full_step_details[-3:]
+            for step in recent:
+                code_text = step.code or "(no code)"
+                stdout = _cap(step.result.stdout) if step.result.stdout else "(no output)"
+                stderr = step.result.stderr if step.result.return_code != 0 else ""
+                sections.append(f"## Step {step.step_index} Code\n```python\n{code_text}\n```")
+                sections.append(f"## Step {step.step_index} Output\n{stdout}")
+                if stderr:
+                    sections.append(f"## Step {step.step_index} Error\n{stderr}")
         if state.judge_guidance:
             sections.append(f"## Prior Guidance\n{state.judge_guidance}")
 

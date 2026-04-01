@@ -115,7 +115,7 @@ def _format_dabstep(
 def _format_steps(steps: list[StepRecord]) -> str:
     parts = []
     for s in steps:
-        stdout = s.result.stdout[:1500] if s.result.stdout else "(no output)"
+        stdout = s.result.stdout[:100_000] if s.result.stdout else "(no output)"
         parts.append(
             f"Step {s.step_index}: {s.plan.step_description}\n"
             f"  Output:\n{stdout}"

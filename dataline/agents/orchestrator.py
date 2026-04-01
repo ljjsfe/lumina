@@ -69,7 +69,7 @@ def run_task(
     start_time = time.time()
     trace: list[dict] = []
     max_iterations = config.get("agent", {}).get("max_iterations", 8)
-    min_iterations = config.get("agent", {}).get("min_iterations", 2)
+    min_iterations = config.get("agent", {}).get("min_iterations", 1)
     max_retries = config.get("agent", {}).get("max_retries", 2)
     backtrack_limit = config.get("agent", {}).get("backtrack_limit", 3)
     stagnation_threshold = config.get("agent", {}).get("stagnation_threshold", 2)
@@ -274,12 +274,12 @@ def run_task(
                 judge_guidance = ""
                 _log(trace, "judge", f"Backtracked to step {truncate_to}")
             else:
-                # Stagnation detection
+                # Stagnation detection (word-level Jaccard similarity)
                 step_failed = result.return_code != 0
                 guidance_repeated = (
                     prev_guidance
                     and verdict.guidance_for_next_step
-                    and prev_guidance.strip()[:80] == verdict.guidance_for_next_step.strip()[:80]
+                    and _guidance_similarity(prev_guidance, verdict.guidance_for_next_step) > 0.7
                 )
                 if step_failed or guidance_repeated:
                     stagnation_count += 1
@@ -353,6 +353,17 @@ def run_task(
         )
     finally:
         sandbox.cleanup()
+
+
+def _guidance_similarity(a: str, b: str) -> float:
+    """Word-level Jaccard similarity between two guidance strings."""
+    words_a = set(a.lower().split())
+    words_b = set(b.lower().split())
+    if not words_a or not words_b:
+        return 0.0
+    intersection = len(words_a & words_b)
+    union = len(words_a | words_b)
+    return intersection / union if union > 0 else 0.0
 
 
 def _log(trace: list[dict], agent: str, message: str) -> None:
