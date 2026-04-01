@@ -169,6 +169,7 @@ def run_task(
                 plan_step = planner.plan_next(
                     question, manifest_json, data_profile, steps_done, traced_llm,
                     state=state,
+                    workspace=workspace,
                 )
             _log(trace, "planner", f"Plan: {plan_step.step_description}")
             iter_obs["plan_description"] = plan_step.step_description

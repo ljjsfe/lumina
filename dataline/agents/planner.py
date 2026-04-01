@@ -8,6 +8,7 @@ from pathlib import Path
 from ..core.llm_client import LLMClient
 from ..core.state import render_for_agent
 from ..core.types import AnalysisState, PlanStep, StepRecord
+from ..core.workspace import Workspace
 
 
 def plan_next(
@@ -18,6 +19,7 @@ def plan_next(
     llm: LLMClient,
     *,
     state: AnalysisState | None = None,
+    workspace: Workspace | None = None,
 ) -> PlanStep:
     """Plan the next single step based on question and prior results.
 
@@ -31,6 +33,12 @@ def plan_next(
         # State path: build full context, inject once via {context}
         context_parts = []
         context_parts.append(f"## Question\n{state.question}")
+
+        # Analysis plan from QuestionAnalyzer — strategic guidance for the whole task
+        if workspace is not None:
+            analysis_plan = workspace.read_analysis_plan()
+            if analysis_plan:
+                context_parts.append(f"## Strategic Analysis Plan\n{analysis_plan}")
 
         if state.judge_guidance:
             context_parts.append(
