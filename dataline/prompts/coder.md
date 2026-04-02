@@ -8,8 +8,10 @@ You are a Python code generator for data analysis. Convert the plan step into ex
 ## Data manifest
 {manifest_json}
 
-## Data profile (sample rows, value distributions, column statistics)
+## Data context (actual sample rows + column distributions)
 {prior_results_summary}
+
+**The sample rows above show the REAL data format and values. Use them to verify your column names, value formats, and filter conditions BEFORE writing filter/aggregation code.**
 
 ## Rules
 1. The task data is at the path in environment variable TASK_DIR.

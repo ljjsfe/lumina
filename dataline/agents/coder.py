@@ -86,30 +86,50 @@ def _extract_code(response: str) -> str:
 
 
 def _get_source_column_context(data_sources: tuple[str, ...], manifest: Manifest) -> str:
-    """Extract column value distributions for the data sources in this step."""
+    """Extract column value distributions and sample rows for the data sources in this step.
+
+    Injects both:
+    - Column value distributions (cardinality, range, known values) — prevents wrong filter values
+    - Actual sample rows formatted as DataFrame — prevents structural assumptions
+    """
     if not data_sources:
         return ""
 
     parts: list[str] = []
     for entry in manifest.entries:
-        # Match by filename (data_sources may contain just filenames or full paths)
         entry_name = entry.file_path.rsplit("/", 1)[-1] if "/" in entry.file_path else entry.file_path
         if not any(entry_name in src or src in entry.file_path for src in data_sources):
             continue
 
+        # --- Sample rows (actual data preview) ---
+        sample_rows = entry.summary.get("sample_rows", [])
+        # For SQLite: check per-table sample rows
+        for table in entry.summary.get("tables", []):
+            t_samples = table.get("sample_rows", [])
+            if t_samples:
+                sample_rows = t_samples  # use last non-empty table
+        for sheet in entry.summary.get("sheets", []):
+            s_samples = sheet.get("sample_rows", [])
+            if s_samples:
+                sample_rows = s_samples
+
+        if sample_rows:
+            parts.append(f"\n### {entry_name} — actual data sample (use this to understand real values/format):")
+            parts.append(_format_sample_rows(sample_rows))
+
+        # --- Column value distributions ---
         columns = entry.summary.get("columns", [])
-        # Also check tables (SQLite) and sheets (Excel)
         for table in entry.summary.get("tables", []):
             columns.extend(table.get("columns", []))
         for sheet in entry.summary.get("sheets", []):
             columns.extend(sheet.get("columns", []))
 
+        col_lines: list[str] = []
         for col in columns:
             name = col.get("name", "")
             value_repr = col.get("value_repr", {})
             if not value_repr:
                 continue
-            # Compact representation
             vtype = value_repr.get("value_type", "")
             card = value_repr.get("cardinality", "")
             detail = ""
@@ -119,9 +139,29 @@ def _get_source_column_context(data_sources: tuple[str, ...], manifest: Manifest
                 detail = f"range: {value_repr['range']}"
             elif "sample" in value_repr:
                 detail = f"sample: {value_repr['sample']}"
-            parts.append(f"- {entry_name}.{name}: {vtype} (card={card}) {detail}")
+            col_lines.append(f"  - {name}: {vtype} (card={card}) {detail}")
 
-    return "\n".join(parts[:50])  # cap at 50 columns
+        if col_lines:
+            parts.append(f"\n### {entry_name} — column distributions:")
+            parts.extend(col_lines[:50])
+
+    return "\n".join(parts)
+
+
+def _format_sample_rows(sample_rows: list[dict]) -> str:
+    """Format sample rows as a readable table (like df.head(3).to_string())."""
+    if not sample_rows:
+        return ""
+    try:
+        import pandas as pd
+        df = pd.DataFrame(sample_rows[:3])
+        return df.to_string(index=False)
+    except Exception:
+        # Fallback: simple key-value format
+        lines = []
+        for i, row in enumerate(sample_rows[:3]):
+            lines.append(f"  row {i}: {row}")
+        return "\n".join(lines)
 
 
 def _format_prior_results(steps: list[StepRecord]) -> str:

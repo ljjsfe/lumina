@@ -226,8 +226,12 @@ def run_task(
             _log(trace, "sandbox", f"rc={result.return_code}, stdout={len(result.stdout)} chars")
 
             debug_retries = 0
+            debug_exhausted = False  # True when all retries failed — trigger planner switch
             if result.return_code != 0:
                 _log(trace, "debugger", f"Code failed: {result.stderr[:200]}")
+                initial_error_type = debugger.classify_error(
+                    debugger._parse_error(result.stderr)[0]
+                )
                 previous_attempts: list[tuple[str, str]] = []
                 for retry in range(max_retries):
                     debug_retries += 1
@@ -246,11 +250,23 @@ def run_task(
                         code = fixed_code
                         break
 
+                # All retries exhausted and still failing — switch strategy
+                if result.return_code != 0:
+                    debug_exhausted = True
+                    final_error = result.stderr[-800:].strip()
+                    _log(trace, "debugger", f"Debug exhausted after {debug_retries} retries. Forcing replan via planner.")
+                    workspace.append_lesson(
+                        iteration,
+                        f"Approach '{plan_step.step_description[:100]}' is unrecoverable "
+                        f"({initial_error_type}): {final_error[:200]}. Try a completely different approach."
+                    )
+
             # Write step to workspace (observability)
             workspace.write_step(iteration, code, result.stdout)
 
             iter_obs["code_success"] = result.return_code == 0
             iter_obs["debug_retries"] = debug_retries
+            iter_obs["debug_exhausted"] = debug_exhausted
             iter_obs["exec_time_ms"] = result.execution_time_ms
             iter_obs["stdout_preview"] = result.stdout[:200].strip()
             iter_obs["stderr_preview"] = result.stderr[:200].strip() if result.return_code != 0 else ""
@@ -273,6 +289,22 @@ def run_task(
                 lesson = _extract_debug_lesson(step_record.result.stderr)
                 if lesson:
                     workspace.append_lesson(iteration, lesson)
+
+            # Debug exhausted: skip judge, force planner to switch approach
+            if debug_exhausted:
+                final_error = result.stderr[-400:].strip()
+                judge_guidance = (
+                    f"CRITICAL: The approach '{plan_step.step_description[:120]}' failed after "
+                    f"{debug_retries} debug attempts and could not be fixed. "
+                    f"Last error: {final_error[:300]}. "
+                    f"You MUST try a completely different approach — different method, different library, "
+                    f"or different data source."
+                )
+                state = update_judge_guidance(state, judge_guidance)
+                workspace.write_judge_guidance(judge_guidance)
+                obs["iterations"].append(iter_obs)
+                stagnation_count = 0  # reset — new approach incoming
+                continue  # skip judge, go straight to next planner iteration
 
             # Compact: summarize older steps when context grows too large
             ctx_size = workspace.estimate_context_size()
