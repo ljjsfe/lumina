@@ -139,6 +139,22 @@ def _deterministic_fallback(manifest_json: str) -> str:
     )
 
 
+def extract_structured_rules(raw_rules: str, llm: LLMClient) -> str:
+    """LLM-powered extraction of structured rules from long domain docs.
+
+    Only called when len(raw_rules) > 50_000. Produces a compact, structured
+    representation that preserves all rules while reducing token footprint.
+    """
+    prompt_path = Path(__file__).parent.parent / "prompts" / "domain_extractor.md"
+    template = prompt_path.read_text(encoding="utf-8")
+
+    # If extremely long, take first 100K chars (safety)
+    rules_text = raw_rules[:100_000] if len(raw_rules) > 100_000 else raw_rules
+    system_prompt = template.replace("{domain_rules_text}", rules_text)
+
+    return llm.chat(system_prompt, "Extract all structured rules now.")
+
+
 def _extract_code(response: str) -> str:
     """Extract Python code from markdown code blocks."""
     match = re.search(r"```python\s*\n(.*?)```", response, re.DOTALL)

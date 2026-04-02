@@ -55,6 +55,7 @@ class PlanStep:
     data_sources: tuple[str, ...] = ()
     depends_on_prior: bool = False
     expected_output: str = ""
+    approach_detail: str = ""  # analytical blueprint: columns, filters, formulas, edge cases
 
 
 @dataclass(frozen=True)
@@ -89,11 +90,12 @@ class JudgeDecision:
     Replaces separate VerifierVerdict + RouterDecision with a single LLM call.
     """
     sufficient: bool
-    action: str  # continue | backtrack | finish
+    action: str  # continue | backtrack | finish | verify | replan
     reasoning: str = ""
     missing: str = ""
     guidance_for_next_step: str = ""  # passed to Planner to steer next iteration
     truncate_to: int = 0
+    verification_code: str = ""  # Python code for independent verification (action="verify")
 
 
 @dataclass(frozen=True)

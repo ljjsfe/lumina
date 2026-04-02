@@ -108,7 +108,7 @@ def _profile_table(conn: sqlite3.Connection, table_name: str) -> dict:
         # Enrich with column stats
         if all_values:
             series = pd.Series(all_values)
-            col_info.update(compute_column_stats(series))
+            col_info.update(compute_column_stats(series, col_name=col_name))
             col_info["value_repr"] = compressed_value_repr(series)
 
         columns.append(col_info)

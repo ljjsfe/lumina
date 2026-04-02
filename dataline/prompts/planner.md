@@ -17,10 +17,25 @@ You are planning a data analysis task. Given the question, data manifest, and re
 11. When the task folder contains a manual or README file, consult it for domain-specific formulas, field definitions, and business rules before writing code.
 12. If Judge Guidance is provided above, your plan MUST directly address it. Do not ignore prior feedback.
 
+## CRITICAL: Approach Detail
+
+Your `approach_detail` field is the analytical blueprint that the Coder will follow. It MUST include:
+
+1. **Exact columns** — List the specific column names to read/filter/aggregate (from the data profile, not guessed).
+2. **Exact filter values** — If filtering, state the exact values to match. Cite the source: "data profile shows values: [A, B, C]" or "knowledge.md states: 2=severe".
+3. **Formula/aggregation** — State precisely: "count rows where X", "compute mean of column Y", "sum(A)/sum(B)", etc.
+4. **Edge cases** — Nulls to handle, type conversions needed, encoding issues, empty result contingency.
+5. **Verification** — What sanity check should confirm correctness (e.g., "filtered count should be < total rows", "percentage should be 0-100").
+
+If domain rules exist and are relevant to this step, QUOTE the exact rule in approach_detail.
+
 ## Output format (JSON only, no other text)
+```json
 {
   "step_description": "What this step does and why",
   "data_sources": ["file1.csv", "database.sqlite/table_name"],
   "depends_on_prior": true/false,
-  "expected_output": "Description of expected result"
+  "expected_output": "Description of expected result",
+  "approach_detail": "Analytical blueprint: columns=[...], filter=column X == value Y (source: knowledge.md says ...), aggregation=mean(Z), edge_cases=[nulls in Z → dropna], verify: result should be between 0-100"
 }
+```

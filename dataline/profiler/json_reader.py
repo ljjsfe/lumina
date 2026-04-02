@@ -79,7 +79,7 @@ def _profile_records(records: list) -> dict:
         # Enrich with column stats if we have enough data
         if non_null:
             series = pd.Series(non_null)
-            col_info.update(compute_column_stats(series))
+            col_info.update(compute_column_stats(series, col_name=key))
             col_info["value_repr"] = compressed_value_repr(series)
 
         columns.append(col_info)

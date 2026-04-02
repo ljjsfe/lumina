@@ -9,13 +9,17 @@ Workspace files serve dual purpose:
 
 Directory structure:
     workspace/
-    ├── DOMAIN_RULES.md       # Full documentation content (high priority)
-    ├── DATA_PROFILE.md       # Column stats, distributions (medium priority)
-    ├── ANALYSIS_PLAN.md      # QuestionAnalyzer output (high priority)
-    ├── PROGRESS.md           # Accumulated findings per step
+    ├── DOMAIN_RULES.md              # Full documentation content (high priority)
+    ├── DOMAIN_RULES_STRUCTURED.md   # LLM-extracted structured rules (when docs > 50K)
+    ├── DATA_PROFILE.md              # Column stats, distributions (medium priority)
+    ├── ANALYSIS_PLAN.md             # QuestionAnalyzer output (high priority)
+    ├── PROGRESS.md                  # Accumulated findings per step
+    ├── CONTEXT_SUMMARY.md           # LLM-compressed summary (replaces old step outputs)
+    ├── LESSONS_LEARNED.md           # Cross-iteration debug lessons
+    ├── JUDGE_GUIDANCE.md            # Current judge steering signal
     └── steps/
-        ├── step_0_code.py    # Code executed
-        ├── step_0_output.txt # Full stdout
+        ├── step_0_code.py           # Code executed
+        ├── step_0_output.txt        # Full stdout
         └── ...
 """
 
@@ -25,6 +29,10 @@ import os
 import re
 import shutil
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .context_budget import ContextBudget
 
 
 class Workspace:
@@ -104,11 +112,15 @@ class Workspace:
         agent_role: str,
         question: str,
         budget_chars: int = 200_000,
+        budget: ContextBudget | None = None,
     ) -> str:
         """Assemble context for an agent, prioritized and budget-aware.
 
         Instead of stuffing everything into prompt, retrieves relevant
         sections from workspace files with priority ordering.
+
+        If a ContextBudget is provided, uses its per-section ratios.
+        Otherwise falls back to hardcoded fractions (backward compatible).
 
         Priority (high to low):
         1. Question (always included)
@@ -120,6 +132,7 @@ class Workspace:
         7. Recent step outputs (last 2 steps for coder, last 1 for judge)
         8. Manifest summary (schema info)
         """
+        total = budget.total_chars if budget else budget_chars
         sections: list[tuple[str, str]] = []  # (heading, content)
         used = 0
 
@@ -130,11 +143,25 @@ class Workspace:
                 return False
             if max_chars and len(content) > max_chars:
                 content = _smart_truncate(content, max_chars, question)
-            if used + len(content) + len(heading) + 10 > budget_chars:
+            if used + len(content) + len(heading) + 10 > total:
                 return False
             sections.append((heading, content))
             used += len(content) + len(heading) + 10
             return True
+
+        # Compute per-section limits
+        if budget:
+            plan_limit = int(total * budget.analysis_plan_pct)
+            domain_limit = int(total * budget.domain_rules_pct)
+            domain_limit_small = int(total * 0.10)  # finalizer gets less
+            profile_limit = int(total * budget.data_profile_pct)
+            progress_limit = int(total * budget.progress_pct)
+        else:
+            plan_limit = total // 5
+            domain_limit = total * 3 // 10
+            domain_limit_small = total // 10
+            profile_limit = total // 4
+            progress_limit = total // 5
 
         # 1. Question (always)
         add("Question", question)
@@ -148,16 +175,15 @@ class Workspace:
         # 3. Analysis plan (strategy context)
         plan = self.read_analysis_plan()
         if plan:
-            add("Analysis Plan", plan, max_chars=budget_chars // 5)
+            add("Analysis Plan", plan, max_chars=plan_limit)
 
-        # 4. Domain rules (documentation — may need truncation)
-        rules = self.read_domain_rules()
+        # 4. Domain rules (prefer structured version when available)
+        structured_rules = self._read("DOMAIN_RULES_STRUCTURED.md")
+        rules = structured_rules or self.read_domain_rules()
         if rules and agent_role != "finalizer":
-            # Domain rules get up to 30% of budget
-            add("Domain Rules (from documentation)", rules, max_chars=budget_chars * 3 // 10)
+            add("Domain Rules (from documentation)", rules, max_chars=domain_limit)
         elif rules:
-            # Finalizer gets smaller domain rules budget
-            add("Domain Rules", rules, max_chars=budget_chars // 10)
+            add("Domain Rules", rules, max_chars=domain_limit_small)
 
         # 5. Manifest summary — injected by caller (not in workspace files)
         #    Caller adds this separately since it comes from AnalysisState
@@ -165,20 +191,29 @@ class Workspace:
         # 6. Data profile
         profile = self.read_data_profile()
         if profile and agent_role in ("planner", "coder", "debugger"):
-            add("Data Profile", profile, max_chars=budget_chars // 4)
+            add("Data Profile", profile, max_chars=profile_limit)
 
-        # 7. Progress
+        # 7. Lessons learned (cross-iteration experience)
+        lessons = self.read_lessons_learned()
+        if lessons and agent_role in ("planner", "coder"):
+            add("Lessons Learned from Prior Iterations", lessons)
+
+        # 8. Progress — use context summary for older steps when available
+        summary = self.read_context_summary()
         progress = self.read_progress()
-        if progress and agent_role in ("planner", "judge", "verifier", "router", "finalizer"):
-            add("Progress So Far", progress, max_chars=budget_chars // 5)
+        if agent_role in ("planner", "judge", "verifier", "router", "finalizer"):
+            if summary:
+                add("Analysis Progress Summary", summary, max_chars=progress_limit)
+            elif progress:
+                add("Progress So Far", progress, max_chars=progress_limit)
 
-        # 8. Recent step outputs (agent-specific)
+        # 9. Recent step outputs (agent-specific)
         if agent_role == "coder":
-            self._add_recent_steps(sections, used, budget_chars, last_n=2)
+            self._add_recent_steps(sections, used, total, last_n=2)
         elif agent_role in ("judge", "verifier"):
-            self._add_recent_steps(sections, used, budget_chars, last_n=1, include_code=True)
+            self._add_recent_steps(sections, used, total, last_n=1, include_code=True)
         elif agent_role == "finalizer":
-            self._add_all_steps(sections, used, budget_chars)
+            self._add_all_steps(sections, used, total)
 
         # Render
         parts = []
@@ -245,6 +280,101 @@ class Workspace:
                 output = output[:remaining] + "\n... (truncated)"
             sections.append((f"Step {idx} Result", output))
             used += len(output) + 50
+
+    # --- Context summarization (compact) ---
+
+    def compact(self, llm: object, question: str, budget: ContextBudget | None = None) -> str:
+        """Summarize accumulated step outputs via a separate LLM call.
+
+        Inspired by Claude Code's compact mechanism: when context grows too
+        large, compress older step outputs into a structured summary.
+        The original step files remain on disk for on-demand retrieval.
+
+        Args:
+            llm: LLMClient (typed as object to avoid circular import).
+            question: The analysis question (for relevance-aware summarization).
+            budget: Optional budget with compact_target_chars.
+
+        Returns:
+            The summary text.
+        """
+        from pathlib import Path
+
+        # Collect all step outputs
+        step_files = sorted(
+            f for f in os.listdir(self._steps_dir) if f.endswith("_output.txt")
+        )
+        if not step_files:
+            return ""
+
+        parts: list[str] = []
+        for fname in step_files:
+            idx = fname.split("_")[1]
+            output = self._read(f"steps/{fname}")
+            code = self._read(f"steps/step_{idx}_code.py")
+            part = f"### Step {idx}\n"
+            if code:
+                part += f"Code:\n```python\n{code[:2000]}\n```\n"
+            part += f"Output:\n{output[:5000]}\n"
+            parts.append(part)
+
+        steps_text = "\n".join(parts)
+
+        # Load compact prompt template
+        prompt_path = Path(__file__).parent.parent / "prompts" / "compact.md"
+        template = prompt_path.read_text(encoding="utf-8")
+        system_prompt = (
+            template
+            .replace("{question}", question)
+            .replace("{steps_text}", steps_text)
+        )
+
+        # Separate LLM call — does not pollute main agent context
+        summary = llm.chat(system_prompt, "Summarize the analysis progress now.")
+
+        # Track which step was last summarized
+        last_step_idx = step_files[-1].split("_")[1]
+        header = f"<!-- summarized_through: step_{last_step_idx} -->\n"
+        summary = header + summary
+
+        self._write("CONTEXT_SUMMARY.md", summary)
+        return summary
+
+    def read_context_summary(self) -> str:
+        return self._read("CONTEXT_SUMMARY.md")
+
+    def estimate_context_size(self) -> int:
+        """Estimate the char count that get_context() would assemble.
+
+        This mirrors the sections that get_context() actually reads,
+        not the total disk usage. Used to decide when to trigger compact.
+        """
+        total = 0
+        total += len(self.read_analysis_plan())
+        total += len(self._read("DOMAIN_RULES_STRUCTURED.md") or self.read_domain_rules())
+        total += len(self.read_data_profile())
+        total += len(self.read_context_summary() or self.read_progress())
+        total += len(self.read_lessons_learned())
+        total += len(self.read_judge_guidance())
+        # Recent step outputs (last 3 steps — worst case)
+        step_files = sorted(
+            f for f in os.listdir(self._steps_dir) if f.endswith("_output.txt")
+        )
+        for fname in step_files[-3:]:
+            total += len(self._read(f"steps/{fname}"))
+        return total
+
+    # --- Lessons learned ---
+
+    def append_lesson(self, step_idx: int, lesson: str) -> None:
+        """Append a lesson learned to LESSONS_LEARNED.md."""
+        line = f"- [step {step_idx}] {lesson}\n"
+        path = os.path.join(self._workspace_dir, "LESSONS_LEARNED.md")
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(line)
+
+    def read_lessons_learned(self) -> str:
+        return self._read("LESSONS_LEARNED.md")
 
     # --- Persistence ---
 

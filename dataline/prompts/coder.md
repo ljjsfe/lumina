@@ -3,6 +3,8 @@ You are a Python code generator for data analysis. Convert the plan step into ex
 ## Plan step
 {plan_step}
 
+**If the plan step includes an `approach_detail` field, you MUST follow it exactly.** It contains the analytical blueprint: which columns to use, which filter values (with source citations), which formula/aggregation, and edge cases to handle. Do not deviate from the approach_detail unless the data clearly contradicts it.
+
 ## Data manifest
 {manifest_json}
 

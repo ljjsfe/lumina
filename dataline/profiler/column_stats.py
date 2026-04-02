@@ -29,7 +29,7 @@ _DATE_PATTERNS = (
 _MIN_DATE_CHECK = 5  # need at least 5 non-null values to flag date-like
 
 
-def compute_column_stats(series: pd.Series) -> dict[str, Any]:
+def compute_column_stats(series: pd.Series, col_name: str = "") -> dict[str, Any]:
     """Compute deterministic enrichment stats for a single column.
 
     Returns a dict to merge into the existing column info dict.
@@ -74,6 +74,11 @@ def compute_column_stats(series: pd.Series) -> dict[str, Any]:
     # ID candidate detection: high uniqueness + not constant
     if stats["uniqueness_ratio"] > 0.9 and n > 5 and "constant" not in flags:
         flags.append("id_candidate")
+
+    # PK/FK inference based on column name pattern + uniqueness
+    key_type = infer_key_type(col_name, stats["uniqueness_ratio"], n)
+    if key_type:
+        flags.append(f"candidate_{key_type}")
 
     stats["flags"] = flags
     return stats
@@ -205,6 +210,75 @@ def safe_scalar(v: object) -> object:
 
 # Keep private alias for internal use
 _safe_scalar = safe_scalar
+
+
+# --- Key inference ---
+
+_KEY_PATTERNS = re.compile(
+    r"(?:^id$|_id$|_key$|_code$|^pk$|^fk_|^key$|^uuid$|^guid$)",
+    re.IGNORECASE,
+)
+
+
+def infer_key_type(col_name: str, uniqueness_ratio: float, n: int) -> str | None:
+    """Infer if column is a candidate primary/foreign key.
+
+    Returns "primary_key", "foreign_key", or None.
+
+    Heuristics:
+    - PK: uniqueness >= 0.99 AND name matches key pattern AND n > 5
+    - FK: uniqueness < 0.99 AND uniqueness > 0.01 AND name matches key pattern
+    """
+    if not col_name or n <= 5:
+        return None
+
+    if not _KEY_PATTERNS.search(col_name):
+        return None
+
+    if uniqueness_ratio >= 0.99:
+        return "primary_key"
+    if uniqueness_ratio > 0.01:
+        return "foreign_key"
+    return None
+
+
+def compute_source_quality_score(columns: list[dict[str, Any]]) -> float:
+    """Compute a quality score (0-1) for a data source based on its columns.
+
+    Factors:
+    - Average completeness across columns (weight: 0.4)
+    - Fraction of columns without mixed_type flag (weight: 0.3)
+    - Fraction of columns without anomalies (weight: 0.3)
+    """
+    if not columns:
+        return 0.0
+
+    n = len(columns)
+
+    # Average completeness
+    completeness_sum = sum(c.get("completeness", 1.0) for c in columns)
+    avg_completeness = completeness_sum / n
+
+    # Fraction without mixed_type
+    mixed_count = sum(
+        1 for c in columns
+        if "mixed_type" in c.get("flags", [])
+    )
+    no_mixed_ratio = 1.0 - (mixed_count / n)
+
+    # Fraction without anomalies (from detect_anomalies, stored in parent summary)
+    # Approximate: columns with both high completeness and no mixed type are "clean"
+    anomaly_flags = {"mixed_type", "date_like"}  # date_like as string is a minor anomaly
+    anomaly_count = sum(
+        1 for c in columns
+        if any(f in anomaly_flags for f in c.get("flags", []))
+    )
+    no_anomaly_ratio = 1.0 - (anomaly_count / n)
+
+    return round(
+        avg_completeness * 0.4 + no_mixed_ratio * 0.3 + no_anomaly_ratio * 0.3,
+        3,
+    )
 
 
 def _safe_float(v: object) -> float | None:

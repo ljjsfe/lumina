@@ -24,6 +24,7 @@ def analyze_question(
     """Analyze question and produce strategic analysis plan.
 
     Reads domain_rules and data_profile from workspace files.
+    If prior progress exists (replan scenario), includes it for context.
     Writes ANALYSIS_PLAN.md to workspace.
     Returns the plan text.
     """
@@ -32,18 +33,29 @@ def analyze_question(
 
     domain_rules = workspace.read_domain_rules()
     data_profile = workspace.read_data_profile()
+    prior_progress = workspace.read_progress()
 
     # Smart truncation for very long inputs
-    # QuestionAnalyzer needs to see domain rules fully if possible,
-    # but data_profile can be trimmed since it's statistical detail
     if len(domain_rules) > 150_000:
         domain_rules = domain_rules[:150_000] + "\n... (truncated)"
     if len(data_profile) > 100_000:
         data_profile = data_profile[:100_000] + "\n... (truncated)"
 
+    # Inject prior progress for replan scenarios
+    effective_question = question
+    if prior_progress:
+        effective_question = (
+            f"{question}\n\n"
+            f"## REPLAN CONTEXT: Prior Attempts and Findings\n"
+            f"The previous analysis direction was incorrect. Here is what was tried and discovered:\n\n"
+            f"{prior_progress[:30_000]}\n\n"
+            f"Use these findings to avoid repeating the same mistakes. "
+            f"Choose a fundamentally different approach."
+        )
+
     system_prompt = (
         template
-        .replace("{question}", question)
+        .replace("{question}", effective_question)
         .replace("{domain_rules}", domain_rules or "(no documentation files found)")
         .replace("{manifest_summary}", manifest_summary)
         .replace("{data_profile}", data_profile or "(profiling failed)")

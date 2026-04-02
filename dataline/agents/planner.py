@@ -54,6 +54,12 @@ def plan_next(
         if state.data_profile_summary:
             context_parts.append(f"## Data Profile\n{state.data_profile_summary}")
 
+        # Lessons learned from prior iterations (debug fixes + approach pivots)
+        if workspace is not None:
+            lessons = workspace.read_lessons_learned()
+            if lessons:
+                context_parts.append(f"## Lessons Learned from Prior Iterations\n{lessons}")
+
         # Execution state from render_for_agent (findings + completed steps only)
         exec_context = render_for_agent(state, "planner")
         if exec_context:
@@ -89,6 +95,7 @@ def plan_next(
         data_sources=tuple(plan_data.get("data_sources", [])),
         depends_on_prior=plan_data.get("depends_on_prior", False),
         expected_output=plan_data.get("expected_output", ""),
+        approach_detail=plan_data.get("approach_detail", ""),
     )
 
 

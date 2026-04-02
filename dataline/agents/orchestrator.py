@@ -13,6 +13,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..core.context_budget import ContextBudget, compute_budget, estimate_complexity
 from ..core.llm_client import LLMClient
 from ..core.sandbox import Sandbox
 from ..core.state import (
@@ -36,6 +37,7 @@ from ..core.workspace import Workspace
 from ..profiler import manifest as profiler
 from ..profiler.manifest import manifest_to_json
 from . import analyzer, planner, coder, judge, debugger, finalizer, question_analyzer
+from .code_validator import validate_column_references
 
 
 @dataclass
@@ -121,11 +123,29 @@ def run_task(
         workspace.write_domain_rules(domain_rules)
         workspace.write_data_profile(data_profile)
 
+        # Extract structured rules for long domain docs (> 50K chars)
+        if len(domain_rules) > 50_000:
+            with tracer.span("domain_extractor"):
+                _log(trace, "domain_extractor", f"Extracting structured rules from {len(domain_rules)} chars")
+                structured_rules = analyzer.extract_structured_rules(domain_rules, traced_llm)
+                workspace._write("DOMAIN_RULES_STRUCTURED.md", structured_rules)
+                _log(trace, "domain_extractor", f"Structured rules: {len(structured_rules)} chars")
+
         obs["analyzer"] = {
             "profile_length_chars": len(data_profile),
             "domain_rules_length_chars": len(domain_rules),
             "analysis_success": len(data_profile) > 50,
             "profile_quality": "rich" if len(data_profile) > 500 else ("sparse" if len(data_profile) > 50 else "failed"),
+        }
+
+        # 2b. Compute dynamic context budget
+        complexity = estimate_complexity(question, manifest, bool(domain_rules))
+        ctx_budget = compute_budget(complexity, bool(domain_rules))
+        _log(trace, "budget", f"complexity={complexity}, total_chars={ctx_budget.total_chars}, compact_trigger={ctx_budget.compact_trigger_chars}")
+        obs["budget"] = {
+            "complexity": complexity,
+            "total_chars": ctx_budget.total_chars,
+            "compact_trigger_chars": ctx_budget.compact_trigger_chars,
         }
 
         # 3. Initialize AnalysisState (still used for compatibility)
@@ -148,9 +168,13 @@ def run_task(
         steps_done: list[StepRecord] = []
         backtracks_used = 0
         stagnation_count = 0
+        replans_used = 0
+        max_replans = 1  # limit replanning to avoid infinite loops
+        max_verifications_per_iter = 1  # limit verification rounds per iteration
 
         # Track judge guidance for planner
         judge_guidance = ""
+
 
         # 5. Incremental plan-code-verify loop
         for iteration in range(max_iterations):
@@ -172,14 +196,27 @@ def run_task(
                     workspace=workspace,
                 )
             _log(trace, "planner", f"Plan: {plan_step.step_description}")
+            if plan_step.approach_detail:
+                _log(trace, "planner", f"Approach: {plan_step.approach_detail[:300]}")
             iter_obs["plan_description"] = plan_step.step_description
             iter_obs["plan_sources"] = list(plan_step.data_sources)
+            iter_obs["approach_detail"] = plan_step.approach_detail
 
             # Generate code
             with tracer.span("coder", metadata={"iteration": iteration}):
                 _log(trace, "coder", "Generating code")
-                code = coder.generate(plan_step, manifest_json, steps_done, traced_llm, state=state)
+                code = coder.generate(
+                    plan_step, manifest_json, steps_done, traced_llm,
+                    state=state, workspace=workspace, manifest=manifest,
+                )
             _log(trace, "coder", f"Code length: {len(code)} chars")
+
+            # Pre-execution validation: check column references
+            annotated_code, col_warnings = validate_column_references(code, manifest)
+            if col_warnings:
+                _log(trace, "code_validator", f"Column warnings: {col_warnings}")
+                code = annotated_code
+                iter_obs["column_warnings"] = col_warnings
 
             # Execute
             step_id = f"step_{iteration}"
@@ -231,11 +268,60 @@ def run_task(
             state = add_step(state, step_record, finding)
             workspace.append_progress(iteration, plan_step.step_description, finding)
 
+            # Extract lessons from successful debug fixes
+            if debug_retries > 0 and result.return_code == 0:
+                lesson = _extract_debug_lesson(step_record.result.stderr)
+                if lesson:
+                    workspace.append_lesson(iteration, lesson)
+
+            # Compact: summarize older steps when context grows too large
+            ctx_size = workspace.estimate_context_size()
+            if ctx_size > ctx_budget.compact_trigger_chars:
+                _log(trace, "compact", f"Context size {ctx_size} exceeds trigger {ctx_budget.compact_trigger_chars}, compacting")
+                workspace.compact(traced_llm, question, ctx_budget)
+
             # Judge: combined sufficiency check + routing + guidance (single LLM call)
             with tracer.span("judge", metadata={"iteration": iteration}):
                 _log(trace, "judge", "Evaluating progress")
                 verdict = judge.evaluate(question, steps_done, traced_llm, state=state)
             _log(trace, "judge", f"sufficient={verdict.sufficient}, action={verdict.action}, missing={verdict.missing}")
+
+            # Handle "verify" action: run verification code, then re-evaluate
+            if verdict.action == "verify" and verdict.verification_code:
+                verifications_done = 0
+                while (verdict.action == "verify"
+                       and verdict.verification_code
+                       and verifications_done < max_verifications_per_iter):
+                    verifications_done += 1
+                    _log(trace, "judge", f"Running verification code ({verifications_done})")
+                    with tracer.span("verification", metadata={"iteration": iteration}):
+                        v_result = sandbox.execute(
+                            verdict.verification_code,
+                            step_id=f"verify_{iteration}_{verifications_done}",
+                        )
+                    _log(trace, "judge", f"Verification rc={v_result.return_code}, stdout={v_result.stdout[:200]}")
+                    iter_obs[f"verification_{verifications_done}_stdout"] = v_result.stdout[:500]
+                    iter_obs[f"verification_{verifications_done}_stderr"] = v_result.stderr[:200] if v_result.return_code != 0 else ""
+
+                    # Inject verification result into state for re-evaluation
+                    verification_finding = f"Verification output: {v_result.stdout[:2000]}"
+                    if v_result.return_code != 0:
+                        verification_finding += f"\nVerification error: {v_result.stderr[:500]}"
+
+                    # Create a synthetic step record with verification result
+                    v_step = StepRecord(
+                        plan=PlanStep(step_description=f"Judge verification (iteration {iteration})"),
+                        code=verdict.verification_code,
+                        result=v_result,
+                        step_index=len(steps_done),
+                    )
+                    # Temporarily add to state for re-evaluation (don't persist)
+                    temp_state = add_step(state, v_step, verification_finding)
+
+                    # Re-evaluate with verification result
+                    with tracer.span("judge_post_verify", metadata={"iteration": iteration}):
+                        verdict = judge.evaluate(question, steps_done + [v_step], traced_llm, state=temp_state)
+                    _log(trace, "judge", f"Post-verify: sufficient={verdict.sufficient}, action={verdict.action}")
 
             iter_obs["judge_sufficient"] = verdict.sufficient
             iter_obs["judge_action"] = verdict.action
@@ -247,6 +333,32 @@ def run_task(
             # Store guidance for next iteration's planner
             prev_guidance = judge_guidance
             judge_guidance = verdict.guidance_for_next_step
+
+            # Record lesson when approach pivots significantly
+            if (prev_guidance and judge_guidance
+                    and _guidance_similarity(prev_guidance, judge_guidance) < 0.5):
+                workspace.append_lesson(iteration, f"Approach changed: {judge_guidance[:150]}")
+
+            # Handle "replan" action: re-run question_analyzer with accumulated findings
+            if verdict.action == "replan" and replans_used < max_replans:
+                replans_used += 1
+                _log(trace, "judge", f"Triggering strategic replan (used={replans_used}/{max_replans})")
+                with tracer.span("replan", metadata={"iteration": iteration}):
+                    # Pass accumulated findings to question_analyzer for context
+                    replan_context = workspace.read_progress()
+                    if replan_context:
+                        workspace.append_lesson(
+                            iteration,
+                            f"Replan triggered: {verdict.reasoning[:200]}"
+                        )
+                    analysis_plan = question_analyzer.analyze_question(
+                        question, state.manifest_summary, workspace, traced_llm,
+                    )
+                _log(trace, "replan", f"New analysis plan: {len(analysis_plan)} chars")
+                # Reset stagnation since we changed direction
+                stagnation_count = 0
+                judge_guidance = verdict.guidance_for_next_step or "Follow the new analysis plan."
+                continue
 
             if verdict.action == "finish":
                 if iteration < min_iterations - 1:
@@ -365,6 +477,65 @@ def _guidance_similarity(a: str, b: str) -> float:
     intersection = len(words_a & words_b)
     union = len(words_a | words_b)
     return intersection / union if union > 0 else 0.0
+
+
+def _extract_debug_lesson(stderr: str) -> str:
+    """Extract a specific lesson from a debug error, including actual names/values.
+
+    The lesson must contain concrete details (column names, file names, actual
+    values) so downstream agents can avoid the exact same mistake — not generic
+    advice that the prompt already contains.
+    """
+    import re
+
+    if not stderr:
+        return ""
+
+    # KeyError: extract the actual column name
+    m = re.search(r"KeyError:\s*['\"]([^'\"]+)['\"]", stderr)
+    if m:
+        col = m.group(1)
+        return f"Column '{col}' does not exist — check actual column names with df.columns"
+
+    # FileNotFoundError: extract the file path
+    m = re.search(r"FileNotFoundError:.*?['\"]([^'\"]+)['\"]", stderr)
+    if m:
+        path = m.group(1)
+        return f"File '{path}' not found — use os.path.join(TASK_DIR, filename)"
+
+    # UnicodeDecodeError: extract the encoding
+    m = re.search(r"UnicodeDecodeError:\s*['\"](\w+)['\"]", stderr)
+    if m:
+        enc = m.group(1)
+        return f"Encoding '{enc}' failed — use encoding='latin-1' as fallback"
+
+    # ValueError with specific message
+    m = re.search(r"ValueError:\s*(.{10,80})", stderr)
+    if m:
+        msg = m.group(1).strip()
+        return f"ValueError: {msg}"
+
+    # TypeError with specific message
+    m = re.search(r"TypeError:\s*(.{10,80})", stderr)
+    if m:
+        msg = m.group(1).strip()
+        return f"TypeError: {msg}"
+
+    # sqlite3 errors: extract table/column name
+    m = re.search(r"(?:no such table|no such column):\s*(\S+)", stderr)
+    if m:
+        name = m.group(1)
+        return f"SQLite: '{name}' does not exist — check with PRAGMA table_info()"
+
+    # Generic: take the last meaningful line of the traceback
+    lines = [l.strip() for l in stderr.strip().splitlines() if l.strip()]
+    if lines:
+        last = lines[-1]
+        if len(last) > 150:
+            last = last[:150]
+        return f"Error fixed: {last}"
+
+    return ""
 
 
 def _log(trace: list[dict], agent: str, message: str) -> None:

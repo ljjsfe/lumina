@@ -34,7 +34,7 @@ def read_csv(file_path: str) -> ManifestEntry:
             col_info["max"] = safe_scalar(df[col].max())
 
         # Enriched stats (deterministic)
-        col_info.update(compute_column_stats(df[col]))
+        col_info.update(compute_column_stats(df[col], col_name=str(col)))
         col_info["value_repr"] = compressed_value_repr(df[col])
 
         # Keep raw sample for backward compat

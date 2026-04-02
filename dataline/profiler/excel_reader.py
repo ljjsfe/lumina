@@ -31,7 +31,7 @@ def read_excel(file_path: str) -> ManifestEntry:
                     "sample": [safe_scalar(v) for v in df[col].dropna().head(3).tolist()],
                 }
                 # Enriched stats
-                col_info.update(compute_column_stats(df[col]))
+                col_info.update(compute_column_stats(df[col], col_name=str(col)))
                 col_info["value_repr"] = compressed_value_repr(df[col])
                 columns.append(col_info)
 
