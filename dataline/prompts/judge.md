@@ -50,8 +50,8 @@ The answer is sufficient ONLY when ALL of these are true:
 - **"finish"** — All anti-patterns clear, final answer visible, sanity check passes.
 - **"continue"** — Progress made but more work needed. Give **specific** guidance: which file, which column, what computation to run next.
 - **"backtrack"** — A previous step has a logic error that later steps built on. Set `truncate_to` to the step index to revert to.
-- **"verify"** — Answer seems plausible but you want independent cross-validation via a different computation path. Write a SHORT verification script. Use when: computation was complex, an edge case (nulls, duplicates) may have distorted the result, or cross-validating would substantially increase confidence.
-- **"replan"** — The entire analysis direction is wrong, not just a code bug. The question is being misinterpreted, or the wrong data sources/columns are targeted entirely. Use sparingly — only when continue/backtrack cannot fix the problem because the approach itself needs rethinking.
+- **"verify"** — Use ONLY when: (a) the answer is a single number from a complex multi-step computation AND you have a concrete, different computation path to check it. Do NOT use if the answer came from a simple filter+count — just check the code logic. Maximum 1 verify per task.
+- **"replan"** — Use ONLY when: the wrong data source or wrong column is being targeted entirely, AND you can clearly identify the correct alternative. Do NOT use for code bugs or wrong filter values — use backtrack instead. Maximum 1 replan per task.
 
 If the agent seems stuck (repeating similar approaches), force a fundamentally different strategy in guidance.
 
