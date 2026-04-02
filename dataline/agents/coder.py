@@ -43,13 +43,7 @@ def generate(
     if state is not None:
         context = render_for_agent(state, "coder")
 
-        # Inject lessons learned from prior iterations
-        if workspace is not None:
-            lessons = workspace.read_lessons_learned()
-            if lessons:
-                context += f"\n\n## Lessons Learned from Prior Iterations\n{lessons}"
-
-        # Inject relevant column value distributions for referenced data sources
+        # Inject relevant column value distributions + sample rows for referenced data sources
         if manifest is not None:
             col_context = _get_source_column_context(plan_step.data_sources, manifest)
             if col_context:

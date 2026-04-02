@@ -242,45 +242,6 @@ def infer_key_type(col_name: str, uniqueness_ratio: float, n: int) -> str | None
     return None
 
 
-def compute_source_quality_score(columns: list[dict[str, Any]]) -> float:
-    """Compute a quality score (0-1) for a data source based on its columns.
-
-    Factors:
-    - Average completeness across columns (weight: 0.4)
-    - Fraction of columns without mixed_type flag (weight: 0.3)
-    - Fraction of columns without anomalies (weight: 0.3)
-    """
-    if not columns:
-        return 0.0
-
-    n = len(columns)
-
-    # Average completeness
-    completeness_sum = sum(c.get("completeness", 1.0) for c in columns)
-    avg_completeness = completeness_sum / n
-
-    # Fraction without mixed_type
-    mixed_count = sum(
-        1 for c in columns
-        if "mixed_type" in c.get("flags", [])
-    )
-    no_mixed_ratio = 1.0 - (mixed_count / n)
-
-    # Fraction without anomalies (from detect_anomalies, stored in parent summary)
-    # Approximate: columns with both high completeness and no mixed type are "clean"
-    anomaly_flags = {"mixed_type", "date_like"}  # date_like as string is a minor anomaly
-    anomaly_count = sum(
-        1 for c in columns
-        if any(f in anomaly_flags for f in c.get("flags", []))
-    )
-    no_anomaly_ratio = 1.0 - (anomaly_count / n)
-
-    return round(
-        avg_completeness * 0.4 + no_mixed_ratio * 0.3 + no_anomaly_ratio * 0.3,
-        3,
-    )
-
-
 def _safe_float(v: object) -> float | None:
     """Safely convert to float, returning None for inf/nan."""
     if v is None:

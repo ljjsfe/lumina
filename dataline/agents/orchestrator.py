@@ -171,6 +171,15 @@ def run_task(
         replans_used = 0
         max_replans = 1  # limit replanning to avoid infinite loops
         max_verifications_per_iter = 1  # limit verification rounds per iteration
+        compact_done = False  # only compact once per task
+
+        # Token-based compact trigger: compact when cumulative input tokens exceed threshold.
+        # 200K token limit → reserve 15K → 185K usable. Trigger at 60% = 111K input tokens.
+        # (Mirrors Claude Code's approach: trigger on actual usage, not estimated file sizes.)
+        compact_trigger_tokens = int(200_000 * 0.60)
+
+        # Track plan descriptions for plan-similarity stagnation detection
+        recent_plan_descriptions: list[str] = []
 
         # Track judge guidance for planner
         judge_guidance = ""
@@ -202,6 +211,17 @@ def run_task(
             iter_obs["plan_sources"] = list(plan_step.data_sources)
             iter_obs["approach_detail"] = plan_step.approach_detail
 
+            # Plan-similarity stagnation: if last 3 plans are near-identical, agent is spinning
+            recent_plan_descriptions.append(plan_step.step_description)
+            if len(recent_plan_descriptions) > 3:
+                recent_plan_descriptions.pop(0)
+            if len(recent_plan_descriptions) == 3:
+                sim_01 = _guidance_similarity(recent_plan_descriptions[0], recent_plan_descriptions[1])
+                sim_12 = _guidance_similarity(recent_plan_descriptions[1], recent_plan_descriptions[2])
+                if sim_01 > 0.6 and sim_12 > 0.6:
+                    _log(trace, "orchestrator", f"Plan stagnation: last 3 plans are near-identical (sim={sim_01:.2f},{sim_12:.2f})")
+                    stagnation_count += 1
+
             # Generate code
             with tracer.span("coder", metadata={"iteration": iteration}):
                 _log(trace, "coder", "Generating code")
@@ -227,7 +247,9 @@ def run_task(
 
             debug_retries = 0
             debug_exhausted = False  # True when all retries failed — trigger planner switch
+            original_stderr = ""    # stderr from the FIRST failure (for lesson extraction)
             if result.return_code != 0:
+                original_stderr = result.stderr
                 _log(trace, "debugger", f"Code failed: {result.stderr[:200]}")
                 initial_error_type = debugger.classify_error(
                     debugger._parse_error(result.stderr)[0]
@@ -284,9 +306,9 @@ def run_task(
             state = add_step(state, step_record, finding)
             workspace.append_progress(iteration, plan_step.step_description, finding)
 
-            # Extract lessons from successful debug fixes
-            if debug_retries > 0 and result.return_code == 0:
-                lesson = _extract_debug_lesson(step_record.result.stderr)
+            # Extract lessons from successful debug fixes (use original failure stderr)
+            if debug_retries > 0 and result.return_code == 0 and original_stderr:
+                lesson = _extract_debug_lesson(original_stderr)
                 if lesson:
                     workspace.append_lesson(iteration, lesson)
 
@@ -306,11 +328,14 @@ def run_task(
                 stagnation_count = 0  # reset — new approach incoming
                 continue  # skip judge, go straight to next planner iteration
 
-            # Compact: summarize older steps when context grows too large
-            ctx_size = workspace.estimate_context_size()
-            if ctx_size > ctx_budget.compact_trigger_chars:
-                _log(trace, "compact", f"Context size {ctx_size} exceeds trigger {ctx_budget.compact_trigger_chars}, compacting")
-                workspace.compact(traced_llm, question, ctx_budget)
+            # Compact: summarize when cumulative input tokens exceed threshold.
+            # Uses actual LLM usage (same logic as Claude Code) — not estimated file sizes.
+            if not compact_done:
+                tokens_used = traced_llm.total_usage.get("input_tokens", 0)
+                if tokens_used > compact_trigger_tokens:
+                    _log(trace, "compact", f"Input tokens {tokens_used} > trigger {compact_trigger_tokens}, compacting")
+                    workspace.compact(traced_llm, question, ctx_budget)
+                    compact_done = True  # only compact once — subsequent calls use summary
 
             # Judge: combined sufficiency check + routing + guidance (single LLM call)
             with tracer.span("judge", metadata={"iteration": iteration}):
