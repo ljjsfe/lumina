@@ -1,4 +1,4 @@
-Evaluate this data analysis task and decide the next action.
+You are evaluating the progress of a data analysis task. You must assess BOTH sufficiency and decide the next action in a SINGLE judgment.
 
 ## Question
 {question}
@@ -6,107 +6,70 @@ Evaluate this data analysis task and decide the next action.
 ## Analysis Context
 {analysis_context}
 
-## Structural Notes
-{structural_notes}
+## Your Role
 
----
+1. **Audit code logic**: Does the executed code correctly implement the intended analysis? Watch for filter inversions, wrong column selections, and incorrect aggregations.
+2. **Assess sufficiency**: Have we gathered enough information to fully answer the question?
+3. **Decide action**: What should we do next?
+4. **Guide next step**: If continuing, what specifically should the next step focus on?
 
-## Step 1: List What Is NOT Done Yet
+## Code Logic Audit — Check BEFORE assessing sufficiency
 
-Before evaluating sufficiency, enumerate EVERY requirement from the question that has NOT been fully answered. Be exhaustive — it is much worse to miss a gap than to list a false gap.
+- Does the filter logic match the question? (e.g., question asks "greater than 100" but code filters for `< 100`)
+- Are the correct columns being used? (e.g., question asks for "revenue" but code uses "cost")
+- Is the aggregation correct? (e.g., question asks for "average" but code computes "sum")
+- Do intermediate row counts make sense? (e.g., filtering returns 0 rows → likely wrong filter)
+- If a WARNING appears in stdout ("No matches", "0 rows"), the step likely failed logically
+- **If Domain Rules are provided above, verify the code follows them exactly** — check formulas, null/empty value handling, and field semantics against the documented rules
 
-For each requirement:
-- State the requirement (what the question asks)
-- State whether it is answered in stdout (YES with evidence, or NO)
-- If YES: **quote the exact stdout line** that contains the answer
+If you detect a logic error, choose "backtrack" or "continue" with specific correction guidance.
 
-Only after completing this enumeration, proceed to the sufficiency checks.
+## Sufficiency Checklist — ALL must be true to choose "finish"
 
-## Step 2: Sufficiency Checks
+- [ ] ALL parts of the question are answered (not just some)
+- [ ] Results contain actual **computed/filtered data** (not just schema, metadata, or data structure descriptions)
+- [ ] Numbers are **specific and final** (not intermediate counts or exploratory statistics)
+- [ ] Numbers preserve **full precision** — do NOT accept rounded values unless the question explicitly asks for rounding
+- [ ] If the question asks for a list, the list is **complete** (not truncated or sampled)
+- [ ] If the question asks for a calculation, the **final number** is explicitly shown in stdout
+- [ ] The output **directly answers** the question (not just shows related data)
+- [ ] Intermediate row counts are reasonable (not 0, not suspiciously small/large)
+- [ ] All returned records have **complete data** for the requested fields (no null/NaN in required columns unless the question explicitly allows missing data)
+- [ ] If Domain Rules exist, the code **strictly follows** documented formulas, field semantics, and matching conventions
 
-Work through ALL checks. One failure = NOT sufficient.
+## Critical Anti-Patterns — Do NOT choose "finish" if:
 
-**Check 1: Step count** — Count how many steps have been completed.
-- If only 1 step has been completed: NOT sufficient, unless the question is a trivial single-lookup (e.g., "how many rows in the table?").
-- Complex questions (joins, formulas, multi-part) typically need 3+ steps.
+1. **Step only loaded/described data** — printing column names, dtypes, or sample rows is exploration, NOT an answer.
+   Signatures in stdout: `df.head()`, `df.describe()`, `df.columns`, `df.dtypes`, `df.info()`, `PRAGMA table_info`.
+2. **Step only showed intermediate results** — e.g., filtered a DataFrame but didn't compute the final metric.
+   Signatures: stdout shows a DataFrame printout (aligned columns) but no scalar answering the question.
+3. **Output says "Not Applicable" or "no matching data"** without verifying the data thoroughly (try alternative column names, values, or filters first)
+4. **The answer hasn't been explicitly computed** — if the question asks "what is the average fee", the stdout must contain the actual average number
+5. **A WARNING or 0-row count appeared** — this means the logic may be wrong.
+   Signatures: `0 rows`, `Empty DataFrame`, `No matches`, `After filter: 0`.
+6. **The code used a filter value that doesn't appear in the data profile** — the filter is likely wrong and will silently match nothing
 
-**Check 2: Final answer visible** — Is the definitive answer explicitly printed in the LATEST stdout?
-- "Intermediate results exist" is NOT enough. The answer must be the final computed value.
-- The answer must have full precision (no rounding unless the question asks for it).
-- **You must quote the exact stdout line** that contains the final answer. If you cannot quote it, the check FAILS.
+## Actions
+- **"finish"**: Results are sufficient AND code logic is correct. Use ONLY when you can point to the exact answer in the stdout.
+- **"continue"**: Making progress but need more steps. Provide guidance for the next step.
+- **"backtrack"**: A previous step produced wrong results (logic error, wrong filter, wrong column). Specify which step to truncate to.
+- **"replan"**: The wrong data source or column is being targeted entirely. Only when continue/backtrack cannot fix the fundamental direction.
 
-**Check 3: Code logic audit** — Check the latest step's code:
-- Filter values match the question (not inverted, not guessed)?
-- Correct column used?
-- Correct aggregation (avg vs sum vs count vs median)?
-- If domain documentation exists: exact formula applied? Quote the relevant rule.
+## Decision Rules
+1. Choose "finish" ONLY when the **final answer value** is explicitly visible in the latest stdout AND the code logic is correct.
+2. Choose "backtrack" if a specific step used wrong column names, wrong filters, inverted logic, or wrong joins.
+3. Choose "continue" if more data gathering, computation, or verification is needed.
+4. When continuing, provide SPECIFIC diagnostic guidance: WHAT is wrong, WHERE in the code, HOW to fix it.
+5. If the agent seems stuck, suggest a **different approach** (e.g., try loading the data differently, check if the column name has different casing).
 
-**Check 4: Sub-question coverage** — If the question asks multiple things (joined by "and", numbered, or multiple "?"), check each one is answered in stdout. Missing any → NOT sufficient.
-
-**Check 5: Anti-pattern scan** — Any one = NOT sufficient:
-
-1. **Exploration only** — stdout shows data structure but no computed answer.
-   Signatures: `df.head()`, `df.describe()`, `df.columns`, `df.dtypes`, `df.info()`, `PRAGMA table_info`.
-   If stdout is ONLY column names, row counts, or schema info → NOT sufficient.
-
-2. **Zero-row filter** — a filter or query returned no data.
-   Signatures: `0 rows`, `Empty DataFrame`, `WARNING`, `No matches`, `After filter: 0`.
-   The computed answer is based on nothing → NOT sufficient.
-
-3. **Intermediate only** — computed a filtered/joined subset but NOT the final metric.
-   Signatures: stdout shows a DataFrame printout (multiple columns with aligned values) but no scalar result answering the question. Printing a table is NOT a final answer unless the question asks for a table.
-
-4. **Filter value not validated** — the code filters on a value that was never verified to exist in the data.
-   Example: `df[df['gender'] == 'male']` but data profile shows values are `['M', 'F']`.
-   If the filter value does NOT appear in the data profile → NOT sufficient.
-
-5. **Under-computed** — the question requires multiple operations but only one was done.
-   Example: question asks "what percentage of X are Y?" but code only computed count of Y without dividing by total.
-   If the answer needs ratio/percentage/rate and only one side was computed → NOT sufficient.
-
-6. **Sub-question gap** — N sub-questions asked, fewer than N answered in stdout.
-
-7. **Sanity failure** — the result violates basic constraints.
-   Percentage outside 0–100%, count > total rows, negative count, implausible zero, extreme outlier (>10x or <0.1x the expected range from data profile).
-
----
-
-## Guidance Quality (CRITICAL when action != "finish")
-
-Your `guidance_for_next_step` must be **diagnostic and specific**, not generic advice.
-
-BAD guidance (too vague, planner cannot act on it):
-- "Investigate why the filter returned 0 rows"
-- "Check the data and try again"
-- "Verify the results"
-
-GOOD guidance (specific file, column, value, operation):
-- "Step 2 line 4: df[df['gender'] == 'male'] — data profile shows gender values are ['M', 'F']. Use 'M' instead."
-- "You computed count=42 but the question asks for percentage. Divide 42 by total rows (1234) and multiply by 100."
-- "The question asks for 'average annual income' but you computed median. Use .mean() instead of .median()."
-
-Always include: WHAT is wrong, WHERE in the code, HOW to fix it.
-
----
-
-## Action
-
-- **finish** — All 5 checks pass AND you have high confidence the answer is correct.
-- **continue** — Progress made. Guidance must cite exact file, column, operation.
-- **backtrack** — A prior step has a logic error. Set `truncate_to`.
-- **replan** — The wrong data source or column is being targeted entirely. Only when continue/backtrack cannot fix the fundamental direction.
-
-## Output (JSON only)
+## Output (JSON only, no other text)
 ```json
 {
   "sufficient": true/false,
   "action": "continue|backtrack|finish|replan",
-  "confidence": 0.0-1.0,
-  "reasoning": "Step 1 enumeration: ... Step 2 checks: Check 1: ..., Check 2: (quote stdout line), ..., Check 5: ...",
-  "missing": "",
-  "guidance_for_next_step": "",
+  "reasoning": "Brief explanation including code logic audit findings",
+  "missing": "What specific information is still needed (empty string if sufficient)",
+  "guidance_for_next_step": "Specific instruction for the planner (empty if finish)",
   "truncate_to": 0
 }
 ```
-
-`confidence`: Your confidence that the current answer is CORRECT and COMPLETE (0.0 = no confidence, 1.0 = certain). Consider: did all checks clearly pass? Any doubts about filter values, formulas, or data coverage?

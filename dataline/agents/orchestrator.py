@@ -36,7 +36,7 @@ from ..core.types import (
 from ..core.workspace import Workspace
 from ..profiler import manifest as profiler
 from ..profiler.manifest import manifest_to_json
-from . import analyzer, planner, coder, judge, debugger, finalizer, question_analyzer
+from . import analyzer, planner, coder, judge, debugger, finalizer
 from .code_validator import validate_column_references
 
 
@@ -92,7 +92,7 @@ def run_task(
     obs: dict[str, Any] = {
         "profiler": {},
         "analyzer": {},
-        "question_analyzer": {},
+
         "iterations": [],
         "final": {},
     }
@@ -150,36 +150,6 @@ def run_task(
 
         # 3. Initialize AnalysisState (still used for compatibility)
         state = create_initial_state(task_id, question, manifest, data_profile, domain_rules)
-
-        # 4. QuestionAnalyzer: pre-execution strategic analysis (GSD discuss-phase)
-        with tracer.span("question_analyzer"):
-            _log(trace, "question_analyzer", "Analyzing question strategy")
-            analysis_plan = question_analyzer.analyze_question(
-                question, state.manifest_summary, workspace, traced_llm,
-            )
-            _log(trace, "question_analyzer", f"Analysis plan: {len(analysis_plan)} chars")
-
-        # Parse machine-readable answer schema from QA output
-        answer_schema = question_analyzer.parse_answer_schema(analysis_plan)
-        _log(trace, "question_analyzer",
-             f"Schema: {len(answer_schema.sub_questions)} sub-questions, "
-             f"min_steps={answer_schema.required_steps_min}, "
-             f"type={answer_schema.expected_answer_type}")
-
-        # Write schema summary to workspace for judge/planner access
-        schema_text = (
-            f"Sub-questions: {list(answer_schema.sub_questions)}\n"
-            f"Expected answer type: {answer_schema.expected_answer_type}\n"
-            f"Domain rules applied: {list(answer_schema.domain_rules_applied)}\n"
-        )
-        workspace._write("ANSWER_SCHEMA.md", schema_text)
-
-        obs["question_analyzer"] = {
-            "plan_length_chars": len(analysis_plan),
-            "plan_generated": len(analysis_plan) > 50,
-            "sub_questions": len(answer_schema.sub_questions),
-            "required_steps_min": answer_schema.required_steps_min,
-        }
 
         # Keep legacy steps_done for TaskResult output
         steps_done: list[StepRecord] = []
@@ -354,27 +324,22 @@ def run_task(
                     workspace.compact(traced_llm, question, ctx_budget)
                     compact_done = True  # only compact once — subsequent calls use summary
 
-            # Compute soft structural notes for judge context (deterministic, zero LLM cost)
-            structural_notes = judge.compute_structural_notes(steps_done, result)
-
             # Judge: combined sufficiency check + routing + guidance (single LLM call)
             with tracer.span("judge", metadata={"iteration": iteration}):
                 _log(trace, "judge", "Evaluating progress")
                 verdict = judge.evaluate(
                     question, steps_done, traced_llm,
-                    state=state, structural_notes=structural_notes,
+                    state=state,
                 )
             _log(trace, "judge",
                  f"sufficient={verdict.sufficient}, action={verdict.action}, "
-                 f"confidence={verdict.confidence:.2f}, missing={verdict.missing}")
+                 f"missing={verdict.missing}")
 
             iter_obs["judge_sufficient"] = verdict.sufficient
             iter_obs["judge_action"] = verdict.action
-            iter_obs["judge_confidence"] = verdict.confidence
             iter_obs["judge_reasoning"] = verdict.reasoning
             iter_obs["judge_missing"] = verdict.missing
             iter_obs["judge_guidance"] = verdict.guidance_for_next_step
-            iter_obs["structural_notes"] = structural_notes
             obs["iterations"].append(iter_obs)
 
             # Store guidance for next iteration's planner
@@ -386,25 +351,16 @@ def run_task(
                     and _guidance_similarity(prev_guidance, judge_guidance) < 0.5):
                 workspace.append_lesson(iteration, f"Approach changed: {judge_guidance[:150]}")
 
-            # Handle "replan" action: re-run question_analyzer with accumulated findings
+            # Handle "replan" action: redirect via judge guidance (no extra LLM call)
             if verdict.action == "replan" and replans_used < max_replans:
                 replans_used += 1
-                _log(trace, "judge", f"Triggering strategic replan (used={replans_used}/{max_replans})")
-                with tracer.span("replan", metadata={"iteration": iteration}):
-                    # Pass accumulated findings to question_analyzer for context
-                    replan_context = workspace.read_progress()
-                    if replan_context:
-                        workspace.append_lesson(
-                            iteration,
-                            f"Replan triggered: {verdict.reasoning[:200]}"
-                        )
-                    analysis_plan = question_analyzer.analyze_question(
-                        question, state.manifest_summary, workspace, traced_llm,
-                    )
-                _log(trace, "replan", f"New analysis plan: {len(analysis_plan)} chars")
-                # Reset stagnation since we changed direction
+                _log(trace, "judge", f"Triggering replan (used={replans_used}/{max_replans}): {verdict.reasoning[:200]}")
+                workspace.append_lesson(
+                    iteration,
+                    f"Replan triggered: {verdict.reasoning[:200]}"
+                )
                 stagnation_count = 0
-                judge_guidance = verdict.guidance_for_next_step or "Follow the new analysis plan."
+                judge_guidance = verdict.guidance_for_next_step or "Try a completely different approach."
                 continue
 
             if verdict.action == "finish":
@@ -420,23 +376,6 @@ def run_task(
                             verdict.missing
                             or "Verify the results: cross-check against the data, "
                             "confirm row counts, and validate any assumptions made."
-                        ),
-                    )
-                    judge_guidance = verdict.guidance_for_next_step
-
-                # Confidence gate: low confidence → downgrade to continue
-                elif verdict.confidence < judge.FINISH_CONFIDENCE_THRESHOLD:
-                    _log(trace, "judge",
-                         f"Confidence {verdict.confidence:.2f} < threshold "
-                         f"{judge.FINISH_CONFIDENCE_THRESHOLD}. Overriding finish → continue.")
-                    verdict = JudgeDecision(
-                        sufficient=False,
-                        action="continue",
-                        reasoning=f"Confidence too low ({verdict.confidence:.2f})",
-                        guidance_for_next_step=(
-                            verdict.missing
-                            or "The answer may be incomplete or incorrect. "
-                            "Re-examine the computation and verify the result."
                         ),
                     )
                     judge_guidance = verdict.guidance_for_next_step

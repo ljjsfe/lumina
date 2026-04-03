@@ -34,12 +34,6 @@ def plan_next(
         context_parts = []
         context_parts.append(f"## Question\n{state.question}")
 
-        # Analysis plan from QuestionAnalyzer — strategic guidance for the whole task
-        if workspace is not None:
-            analysis_plan = workspace.read_analysis_plan()
-            if analysis_plan:
-                context_parts.append(f"## Strategic Analysis Plan (advisory — adapt based on actual data)\n{analysis_plan}")
-
         if state.judge_guidance:
             context_parts.append(
                 f"## Judge Guidance (MUST ADDRESS in this step)\n"
