@@ -442,30 +442,7 @@ def run_task(
                     judge_guidance = verdict.guidance_for_next_step
 
                 else:
-                    # Conditional adversarial second opinion
-                    with tracer.span("judge_second_opinion", metadata={"iteration": iteration}):
-                        _log(trace, "judge", "Running adversarial second opinion")
-                        confirmed, flaw_reason = judge.second_opinion(
-                            question, traced_llm,
-                            state=state,
-                            primary_reasoning=verdict.reasoning,
-                            steps_done=steps_done,
-                        )
-                    _log(trace, "judge", f"Second opinion: confirmed={confirmed}, reason={flaw_reason[:200] if flaw_reason else ''}")
-                    iter_obs["second_opinion_confirmed"] = confirmed
-                    iter_obs["second_opinion_reason"] = flaw_reason[:500] if flaw_reason else ""
-
-                    if confirmed:
-                        break  # Both judges agree: finish
-                    else:
-                        _log(trace, "judge", "Second opinion rejected finish. Continuing.")
-                        verdict = JudgeDecision(
-                            sufficient=False,
-                            action="continue",
-                            reasoning=f"Second opinion found flaw: {flaw_reason[:300]}",
-                            guidance_for_next_step=flaw_reason[:500],
-                        )
-                        judge_guidance = verdict.guidance_for_next_step
+                    break
             elif verdict.action == "backtrack" and backtracks_used < backtrack_limit:
                 truncate_to = max(0, min(verdict.truncate_to, len(steps_done) - 1))
                 steps_done = steps_done[:truncate_to]
