@@ -80,7 +80,6 @@ ANSWER_SCHEMA
   "sub_questions": ["Q1: description", "Q2: description"],
   "expected_answer_type": "scalar|list|table",
   "expected_columns": ["col1", "col2"],
-  "required_steps_min": 2,
   "domain_rules_applied": ["rule1 summary", "rule2 summary"]
 }
 ```
@@ -88,5 +87,4 @@ ANSWER_SCHEMA
 - `sub_questions`: list of all sub-questions identified (same as section 1)
 - `expected_answer_type`: "scalar" for single value, "list" for multiple values in one column, "table" for multi-column
 - `expected_columns`: your best estimate of output column names (advisory, not mandatory)
-- `required_steps_min`: minimum number of steps this question needs (explore + compute + answer)
 - `domain_rules_applied`: list of domain rules used (empty list if no domain docs)

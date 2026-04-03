@@ -170,7 +170,6 @@ def run_task(
         schema_text = (
             f"Sub-questions: {list(answer_schema.sub_questions)}\n"
             f"Expected answer type: {answer_schema.expected_answer_type}\n"
-            f"Required steps (min): {answer_schema.required_steps_min}\n"
             f"Domain rules applied: {list(answer_schema.domain_rules_applied)}\n"
         )
         workspace._write("ANSWER_SCHEMA.md", schema_text)
@@ -236,7 +235,7 @@ def run_task(
             if len(recent_plan_descriptions) == 3:
                 sim_01 = _guidance_similarity(recent_plan_descriptions[0], recent_plan_descriptions[1])
                 sim_12 = _guidance_similarity(recent_plan_descriptions[1], recent_plan_descriptions[2])
-                if sim_01 > 0.6 and sim_12 > 0.6:
+                if sim_01 > 0.75 and sim_12 > 0.75:
                     _log(trace, "orchestrator", f"Plan stagnation: last 3 plans are near-identical (sim={sim_01:.2f},{sim_12:.2f})")
                     stagnation_count += 1
 

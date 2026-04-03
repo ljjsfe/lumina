@@ -17,35 +17,20 @@ You are planning a data analysis task. Given the question, data manifest, and re
 11. When the task folder contains a manual or README file, consult it for domain-specific formulas, field definitions, and business rules before writing code.
 12. If Judge Guidance is provided above, your plan MUST directly address it. Do not ignore prior feedback.
 
-## CRITICAL: Approach Detail
+## Approach Detail (optional but helpful)
 
-Your `approach_detail` field is the analytical blueprint that the Coder will follow. It MUST include:
+If you have specific knowledge of exact column names, filter values, or formulas from the data profile or domain rules above, include them in `approach_detail`. Do not guess — only include details you can cite from the data profile or documentation.
 
-1. **Exact columns** — List the specific column names to read/filter/aggregate (from the data profile, not guessed).
-2. **Exact filter values** — If filtering, state the exact values to match. Cite the source: "data profile shows values: [A, B, C]" or "knowledge.md states: 2=severe".
-3. **Formula/aggregation** — State precisely: "count rows where X", "compute mean of column Y", "sum(A)/sum(B)", etc.
-4. **Edge cases** — Nulls to handle, type conversions needed, encoding issues, empty result contingency.
-5. **Verification** — What sanity check should confirm correctness (e.g., "filtered count should be < total rows", "percentage should be 0-100").
-
-If domain rules exist and are relevant to this step, QUOTE the exact rule in approach_detail.
-
-## Step Type (MANDATORY)
-
-Choose one:
-- **"explore"** — Loading data, checking columns/values, inspecting structure. No answer produced.
-- **"compute"** — Filtering, joining, aggregating. Produces intermediate results, not the final answer.
-- **"final_answer"** — Computes and prints the FINAL answer to the question (or a sub-question). Must end with a `print(f"[ANSWER] ...")` statement.
-
-Every task must eventually have a `final_answer` step. Do not set `final_answer` unless this step will print the definitive answer.
+Good approach_detail: "Filter payments.csv column 'status' == 'completed' (data profile shows values: ['pending', 'completed', 'failed']), then compute mean of 'amount' column"
+Bad approach_detail: "Filter the relevant column for the target value and compute the metric" (too vague, adds no value)
 
 ## Output format (JSON only, no other text)
 ```json
 {
   "step_description": "What this step does and why",
-  "step_type": "explore|compute|final_answer",
   "data_sources": ["file1.csv", "database.sqlite/table_name"],
   "depends_on_prior": true/false,
   "expected_output": "Description of expected result",
-  "approach_detail": "Analytical blueprint: columns=[...], filter=column X == value Y (source: knowledge.md says ...), aggregation=mean(Z), edge_cases=[nulls in Z → dropna], verify: result should be between 0-100"
+  "approach_detail": "Optional: exact columns, filter values (with source), formula, edge cases"
 }
 ```
