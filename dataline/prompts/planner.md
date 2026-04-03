@@ -29,10 +29,20 @@ Your `approach_detail` field is the analytical blueprint that the Coder will fol
 
 If domain rules exist and are relevant to this step, QUOTE the exact rule in approach_detail.
 
+## Step Type (MANDATORY)
+
+Choose one:
+- **"explore"** — Loading data, checking columns/values, inspecting structure. No answer produced.
+- **"compute"** — Filtering, joining, aggregating. Produces intermediate results, not the final answer.
+- **"final_answer"** — Computes and prints the FINAL answer to the question (or a sub-question). Must end with a `print(f"[ANSWER] ...")` statement.
+
+Every task must eventually have a `final_answer` step. Do not set `final_answer` unless this step will print the definitive answer.
+
 ## Output format (JSON only, no other text)
 ```json
 {
   "step_description": "What this step does and why",
+  "step_type": "explore|compute|final_answer",
   "data_sources": ["file1.csv", "database.sqlite/table_name"],
   "depends_on_prior": true/false,
   "expected_output": "Description of expected result",

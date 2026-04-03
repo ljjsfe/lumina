@@ -56,6 +56,7 @@ class PlanStep:
     depends_on_prior: bool = False
     expected_output: str = ""
     approach_detail: str = ""  # analytical blueprint: columns, filters, formulas, edge cases
+    step_type: str = "compute"  # "explore" | "compute" | "final_answer"
 
 
 @dataclass(frozen=True)

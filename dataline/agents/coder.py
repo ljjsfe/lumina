@@ -32,6 +32,7 @@ def generate(
 
     plan_dict: dict = {
         "step_description": plan_step.step_description,
+        "step_type": plan_step.step_type,
         "data_sources": list(plan_step.data_sources),
         "depends_on_prior": plan_step.depends_on_prior,
         "expected_output": plan_step.expected_output,

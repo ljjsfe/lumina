@@ -172,12 +172,17 @@ class Workspace:
             if guidance:
                 add("Judge Guidance (MUST ADDRESS in this step)", f"> **{guidance}**")
 
-        # 3. Analysis plan (strategy context)
+        # 3. Answer schema (machine-readable expectations from QuestionAnalyzer)
+        schema = self._read("ANSWER_SCHEMA.md")
+        if schema and agent_role in ("judge", "planner", "finalizer"):
+            add("Answer Schema (from QuestionAnalyzer — structural checks)", schema)
+
+        # 4. Analysis plan (strategy context)
         plan = self.read_analysis_plan()
         if plan:
             add("Analysis Plan", plan, max_chars=plan_limit)
 
-        # 4. Domain rules (prefer structured version when available)
+        # 5. Domain rules (prefer structured version when available)
         structured_rules = self._read("DOMAIN_RULES_STRUCTURED.md")
         rules = structured_rules or self.read_domain_rules()
         if rules and agent_role != "finalizer":

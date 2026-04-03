@@ -102,7 +102,7 @@ def add_step(
         step: The completed step record (with full stdout).
         finding_summary: 1-line summary of what this step discovered.
     """
-    step_line = f"Step {step.step_index}: {step.plan.step_description} → {finding_summary}"
+    step_line = f"Step {step.step_index} [{step.plan.step_type}]: {step.plan.step_description} → {finding_summary}"
 
     # Detect variables saved to disk (pickle files)
     new_vars = state.variables_in_scope

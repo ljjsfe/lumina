@@ -159,9 +159,27 @@ def run_task(
             )
             _log(trace, "question_analyzer", f"Analysis plan: {len(analysis_plan)} chars")
 
+        # Parse machine-readable answer schema from QA output
+        answer_schema = question_analyzer.parse_answer_schema(analysis_plan)
+        _log(trace, "question_analyzer",
+             f"Schema: {len(answer_schema.sub_questions)} sub-questions, "
+             f"min_steps={answer_schema.required_steps_min}, "
+             f"type={answer_schema.expected_answer_type}")
+
+        # Write schema summary to workspace for judge/planner access
+        schema_text = (
+            f"Sub-questions: {list(answer_schema.sub_questions)}\n"
+            f"Expected answer type: {answer_schema.expected_answer_type}\n"
+            f"Required steps (min): {answer_schema.required_steps_min}\n"
+            f"Domain rules applied: {list(answer_schema.domain_rules_applied)}\n"
+        )
+        workspace._write("ANSWER_SCHEMA.md", schema_text)
+
         obs["question_analyzer"] = {
             "plan_length_chars": len(analysis_plan),
             "plan_generated": len(analysis_plan) > 50,
+            "sub_questions": len(answer_schema.sub_questions),
+            "required_steps_min": answer_schema.required_steps_min,
         }
 
         # Keep legacy steps_done for TaskResult output
@@ -209,6 +227,7 @@ def run_task(
                 _log(trace, "planner", f"Approach: {plan_step.approach_detail[:300]}")
             iter_obs["plan_description"] = plan_step.step_description
             iter_obs["plan_sources"] = list(plan_step.data_sources)
+            iter_obs["step_type"] = plan_step.step_type
             iter_obs["approach_detail"] = plan_step.approach_detail
 
             # Plan-similarity stagnation: if last 3 plans are near-identical, agent is spinning

@@ -90,12 +90,17 @@ def plan_next(
             "expected_output": "analysis result",
         }
 
+    raw_step_type = plan_data.get("step_type", "compute")
+    valid_types = {"explore", "compute", "final_answer"}
+    step_type = raw_step_type if raw_step_type in valid_types else "compute"
+
     return PlanStep(
         step_description=plan_data.get("step_description", ""),
         data_sources=tuple(plan_data.get("data_sources", [])),
         depends_on_prior=plan_data.get("depends_on_prior", False),
         expected_output=plan_data.get("expected_output", ""),
         approach_detail=plan_data.get("approach_detail", ""),
+        step_type=step_type,
     )
 
 
