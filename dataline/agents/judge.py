@@ -73,7 +73,7 @@ def _format_steps(steps: list[StepRecord]) -> str:
         return "No steps completed."
     parts: list[str] = []
     for s in steps:
-        stdout = s.result.stdout[:100_000] if s.result.stdout else "(no output)"
+        stdout = s.result.stdout[:800] if s.result.stdout else "(no output)"
         status = "OK" if s.result.return_code == 0 else f"ERROR (rc={s.result.return_code})"
         parts.append(
             f"Step {s.step_index}: {s.plan.step_description}\n"

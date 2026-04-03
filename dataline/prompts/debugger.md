@@ -13,28 +13,6 @@ Fix the following Python code that failed during data analysis execution.
 ## Error Summary
 {error_type}: {error_message}
 
-## Error Category: {error_category}
-
-### Fix strategy by category
-
-**data** (KeyError, FileNotFoundError, JSONDecodeError, UnicodeDecodeError):
-- The error is about WHAT data looks like, not code logic.
-- FIRST: check exact column names, file paths, and data types in the data context below.
-- Fix: match column names exactly (case-sensitive), use safe_read_csv/safe_read_json for path resolution, use describe_data() to inspect structure before accessing fields.
-
-**type** (TypeError, ValueError, AttributeError):
-- The error is about HOW data is being used.
-- Common cause: mixed-type columns (e.g., list values in a DataFrame column), wrong dtype assumptions.
-- Fix: check column dtypes in data context, cast explicitly, handle None/NaN before operations, avoid .nunique() on unhashable columns.
-
-**resource** (MemoryError, TimeoutError):
-- The error is about data SIZE.
-- Fix: use chunked reading, sample data, or more efficient operations (e.g., SQL aggregation instead of loading full table).
-
-**logic** (all other errors):
-- The code logic is wrong.
-- Re-read the error message carefully. Check if the algorithm matches the intended analysis.
-
 ## Retry context
 {retry_context}
 
@@ -42,8 +20,8 @@ Fix the following Python code that failed during data analysis execution.
 {data_context}
 
 ## Rules
-1. Fix the SPECIFIC error shown in the traceback. Follow the strategy for error category "{error_category}".
-2. Use the data context above to verify column names, types, and values BEFORE writing the fix.
+1. Fix the SPECIFIC error shown in the traceback.
+2. Use the data context above to fix column name mismatches, type errors, encoding issues. Check exact column names and values.
 3. If this is a retry, try a FUNDAMENTALLY DIFFERENT approach — do not just tweak the same failing logic.
 4. Common fixes:
    - KeyError/column not found → check exact column names in data context; try case-insensitive matching

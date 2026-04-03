@@ -8,7 +8,6 @@ from pathlib import Path
 from ..core.llm_client import LLMClient
 from ..core.state import render_for_agent
 from ..core.types import AnalysisState, PlanStep, StepRecord
-from ..core.workspace import Workspace
 
 
 def plan_next(
@@ -19,7 +18,6 @@ def plan_next(
     llm: LLMClient,
     *,
     state: AnalysisState | None = None,
-    workspace: Workspace | None = None,
 ) -> PlanStep:
     """Plan the next single step based on question and prior results.
 
@@ -47,12 +45,6 @@ def plan_next(
 
         if state.data_profile_summary:
             context_parts.append(f"## Data Profile\n{state.data_profile_summary}")
-
-        # Lessons learned from prior iterations (debug fixes + approach pivots)
-        if workspace is not None:
-            lessons = workspace.read_lessons_learned()
-            if lessons:
-                context_parts.append(f"## Lessons Learned from Prior Iterations\n{lessons}")
 
         # Execution state from render_for_agent (findings + completed steps only)
         exec_context = render_for_agent(state, "planner")
@@ -84,17 +76,11 @@ def plan_next(
             "expected_output": "analysis result",
         }
 
-    raw_step_type = plan_data.get("step_type", "compute")
-    valid_types = {"explore", "compute", "final_answer"}
-    step_type = raw_step_type if raw_step_type in valid_types else "compute"
-
     return PlanStep(
         step_description=plan_data.get("step_description", ""),
         data_sources=tuple(plan_data.get("data_sources", [])),
         depends_on_prior=plan_data.get("depends_on_prior", False),
         expected_output=plan_data.get("expected_output", ""),
-        approach_detail=plan_data.get("approach_detail", ""),
-        step_type=step_type,
     )
 
 

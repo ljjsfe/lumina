@@ -53,20 +53,19 @@ If you detect a logic error, choose "backtrack" or "continue" with specific corr
 - **"finish"**: Results are sufficient AND code logic is correct. Use ONLY when you can point to the exact answer in the stdout.
 - **"continue"**: Making progress but need more steps. Provide guidance for the next step.
 - **"backtrack"**: A previous step produced wrong results (logic error, wrong filter, wrong column). Specify which step to truncate to.
-- **"replan"**: The wrong data source or column is being targeted entirely. Only when continue/backtrack cannot fix the fundamental direction.
 
 ## Decision Rules
 1. Choose "finish" ONLY when the **final answer value** is explicitly visible in the latest stdout AND the code logic is correct.
 2. Choose "backtrack" if a specific step used wrong column names, wrong filters, inverted logic, or wrong joins.
 3. Choose "continue" if more data gathering, computation, or verification is needed.
 4. When continuing, provide SPECIFIC diagnostic guidance: WHAT is wrong, WHERE in the code, HOW to fix it.
-5. If the agent seems stuck, suggest a **different approach** (e.g., try loading the data differently, check if the column name has different casing).
+5. If the agent seems stuck, suggest a **different approach** (e.g., "try loading the data differently" or "check if the column name has different casing").
 
 ## Output (JSON only, no other text)
 ```json
 {
   "sufficient": true/false,
-  "action": "continue|backtrack|finish|replan",
+  "action": "continue" | "backtrack" | "finish",
   "reasoning": "Brief explanation including code logic audit findings",
   "missing": "What specific information is still needed (empty string if sufficient)",
   "guidance_for_next_step": "Specific instruction for the planner (empty if finish)",

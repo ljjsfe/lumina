@@ -30,7 +30,6 @@ def fix(
     template = prompt_path.read_text(encoding="utf-8")
 
     error_type, error_message, full_traceback = _parse_error(result.stderr)
-    error_category = classify_error(error_type)
 
     if state is not None:
         data_context = render_for_agent(state, "debugger")
@@ -54,7 +53,6 @@ def fix(
         .replace("{full_traceback}", full_traceback)
         .replace("{error_type}", error_type)
         .replace("{error_message}", error_message)
-        .replace("{error_category}", error_category)
         .replace("{retry_context}", retry_context)
         .replace("{data_context}", data_context)
     )
@@ -64,7 +62,7 @@ def fix(
 
 
 def _parse_error(stderr: str) -> tuple[str, str, str]:
-    """Extract error type, message, and full traceback from stderr."""
+    """Extract error type, message, and truncated traceback from stderr."""
     lines = stderr.strip().split("\n")
     if not lines:
         return "UnknownError", "No error output", ""
@@ -78,29 +76,10 @@ def _parse_error(stderr: str) -> tuple[str, str, str]:
     else:
         error_type, error_msg = "RuntimeError", last_line
 
-    # Full traceback — no truncation (each API call has its own context window)
-    full_tb = stderr.strip()
-    if len(full_tb) > 100_000:
-        full_tb = full_tb[-100_000:]
+    # Keep last 500 chars of full traceback for context
+    full_tb = stderr.strip()[-500:] if len(stderr.strip()) > 500 else stderr.strip()
 
     return error_type, error_msg, full_tb
-
-
-# Error categories for targeted fix strategies
-_DATA_ERRORS = {"KeyError", "ColumnNotFoundError", "FileNotFoundError", "UnicodeDecodeError", "JSONDecodeError"}
-_TYPE_ERRORS = {"TypeError", "ValueError", "AttributeError"}
-_RESOURCE_ERRORS = {"MemoryError", "TimeoutError"}
-
-
-def classify_error(error_type: str) -> str:
-    """Classify error into category for targeted fix strategy."""
-    if error_type in _DATA_ERRORS:
-        return "data"
-    if error_type in _TYPE_ERRORS:
-        return "type"
-    if error_type in _RESOURCE_ERRORS:
-        return "resource"
-    return "logic"
 
 
 def _extract_code(response: str) -> str:

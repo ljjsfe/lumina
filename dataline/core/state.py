@@ -220,7 +220,7 @@ def render_for_agent(state: AnalysisState, agent_role: str) -> str:
             sections.append("## Key Findings\n" + "\n".join(f"- {f}" for f in state.key_findings))
         if state.completed_steps:
             sections.append("## Completed Steps\n" + "\n".join(state.completed_steps))
-        # Latest step only: full code + output for focused logic audit
+        # Last step with code + output for logic auditing
         if state.full_step_details:
             last = state.full_step_details[-1]
             code_text = last.code or "(no code)"

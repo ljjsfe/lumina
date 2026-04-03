@@ -7,7 +7,7 @@ llm:
   temperature: 1.0  # kimi-k2.5 only accepts temperature=1
 
 agent:
-  max_iterations: 10
+  max_iterations: 8
   min_iterations: 1
   max_retries: 2
   backtrack_limit: 3

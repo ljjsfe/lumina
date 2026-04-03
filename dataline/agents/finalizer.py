@@ -62,8 +62,9 @@ def _format_kdd(
 
     try:
         data = json.loads(_extract_json(response))
-        result = data["columns"] if "columns" in data else data
-        return _validate_answer(result, question)
+        if "columns" in data:
+            return data["columns"]
+        return data
     except (json.JSONDecodeError, ValueError):
         return _fallback_extract(steps_done, state)
 
@@ -111,50 +112,10 @@ def _format_dabstep(
         return _fallback_extract(steps_done, state)
 
 
-def _validate_answer(answer: dict, question: str) -> dict:
-    """Validate and clean the answer structure.
-
-    Checks:
-    1. All columns are non-empty lists (not None or empty)
-    2. No None/null values inside lists (replace with empty string for strings,
-       keep numbers as-is — None in a numeric answer is a real signal)
-    3. All lists have equal length (a mismatched table would be malformed)
-    4. Numeric strings preserved with full precision (no accidental float conversion)
-    """
-    if not isinstance(answer, dict):
-        return answer
-
-    cleaned: dict = {}
-    lengths: list[int] = []
-
-    for col, values in answer.items():
-        if not isinstance(values, list):
-            values = [values]
-        # Replace None with "" for string columns, keep numeric None as is
-        cleaned_vals: list = []
-        for v in values:
-            if v is None:
-                cleaned_vals.append("")
-            else:
-                cleaned_vals.append(v)
-        cleaned[col] = cleaned_vals
-        lengths.append(len(cleaned_vals))
-
-    # Warn (but don't crash) if column lengths differ — finalizer LLM alignment issue
-    if len(set(lengths)) > 1:
-        # Pad shorter columns with empty strings to match longest
-        max_len = max(lengths)
-        for col in cleaned:
-            while len(cleaned[col]) < max_len:
-                cleaned[col].append("")
-
-    return cleaned
-
-
 def _format_steps(steps: list[StepRecord]) -> str:
     parts = []
     for s in steps:
-        stdout = s.result.stdout[:100_000] if s.result.stdout else "(no output)"
+        stdout = s.result.stdout[:1500] if s.result.stdout else "(no output)"
         parts.append(
             f"Step {s.step_index}: {s.plan.step_description}\n"
             f"  Output:\n{stdout}"
