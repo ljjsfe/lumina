@@ -354,17 +354,27 @@ def run_task(
                     workspace.compact(traced_llm, question, ctx_budget)
                     compact_done = True  # only compact once — subsequent calls use summary
 
+            # Compute soft structural notes for judge context (deterministic, zero LLM cost)
+            structural_notes = judge.compute_structural_notes(steps_done, result)
+
             # Judge: combined sufficiency check + routing + guidance (single LLM call)
             with tracer.span("judge", metadata={"iteration": iteration}):
                 _log(trace, "judge", "Evaluating progress")
-                verdict = judge.evaluate(question, steps_done, traced_llm, state=state)
-            _log(trace, "judge", f"sufficient={verdict.sufficient}, action={verdict.action}, missing={verdict.missing}")
+                verdict = judge.evaluate(
+                    question, steps_done, traced_llm,
+                    state=state, structural_notes=structural_notes,
+                )
+            _log(trace, "judge",
+                 f"sufficient={verdict.sufficient}, action={verdict.action}, "
+                 f"confidence={verdict.confidence:.2f}, missing={verdict.missing}")
 
             iter_obs["judge_sufficient"] = verdict.sufficient
             iter_obs["judge_action"] = verdict.action
+            iter_obs["judge_confidence"] = verdict.confidence
             iter_obs["judge_reasoning"] = verdict.reasoning
             iter_obs["judge_missing"] = verdict.missing
             iter_obs["judge_guidance"] = verdict.guidance_for_next_step
+            iter_obs["structural_notes"] = structural_notes
             obs["iterations"].append(iter_obs)
 
             # Store guidance for next iteration's planner
@@ -405,7 +415,7 @@ def run_task(
                     verdict = JudgeDecision(
                         sufficient=False,
                         action="continue",
-                        reasoning="Overridden: must verify results before concluding",
+                        reasoning="Overridden: min_iterations not reached",
                         guidance_for_next_step=(
                             verdict.missing
                             or "Verify the results: cross-check against the data, "
@@ -413,8 +423,49 @@ def run_task(
                         ),
                     )
                     judge_guidance = verdict.guidance_for_next_step
+
+                # Confidence gate: low confidence → downgrade to continue
+                elif verdict.confidence < judge.FINISH_CONFIDENCE_THRESHOLD:
+                    _log(trace, "judge",
+                         f"Confidence {verdict.confidence:.2f} < threshold "
+                         f"{judge.FINISH_CONFIDENCE_THRESHOLD}. Overriding finish → continue.")
+                    verdict = JudgeDecision(
+                        sufficient=False,
+                        action="continue",
+                        reasoning=f"Confidence too low ({verdict.confidence:.2f})",
+                        guidance_for_next_step=(
+                            verdict.missing
+                            or "The answer may be incomplete or incorrect. "
+                            "Re-examine the computation and verify the result."
+                        ),
+                    )
+                    judge_guidance = verdict.guidance_for_next_step
+
                 else:
-                    break
+                    # Conditional adversarial second opinion
+                    with tracer.span("judge_second_opinion", metadata={"iteration": iteration}):
+                        _log(trace, "judge", "Running adversarial second opinion")
+                        confirmed, flaw_reason = judge.second_opinion(
+                            question, traced_llm,
+                            state=state,
+                            primary_reasoning=verdict.reasoning,
+                            steps_done=steps_done,
+                        )
+                    _log(trace, "judge", f"Second opinion: confirmed={confirmed}, reason={flaw_reason[:200] if flaw_reason else ''}")
+                    iter_obs["second_opinion_confirmed"] = confirmed
+                    iter_obs["second_opinion_reason"] = flaw_reason[:500] if flaw_reason else ""
+
+                    if confirmed:
+                        break  # Both judges agree: finish
+                    else:
+                        _log(trace, "judge", "Second opinion rejected finish. Continuing.")
+                        verdict = JudgeDecision(
+                            sufficient=False,
+                            action="continue",
+                            reasoning=f"Second opinion found flaw: {flaw_reason[:300]}",
+                            guidance_for_next_step=flaw_reason[:500],
+                        )
+                        judge_guidance = verdict.guidance_for_next_step
             elif verdict.action == "backtrack" and backtracks_used < backtrack_limit:
                 truncate_to = max(0, min(verdict.truncate_to, len(steps_done) - 1))
                 steps_done = steps_done[:truncate_to]
