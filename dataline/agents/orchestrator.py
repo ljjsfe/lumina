@@ -188,7 +188,6 @@ def run_task(
         stagnation_count = 0
         replans_used = 0
         max_replans = 1  # limit replanning to avoid infinite loops
-        max_verifications_per_iter = 1  # limit verification rounds per iteration
         compact_done = False  # only compact once per task
 
         # Token-based compact trigger: compact when cumulative input tokens exceed threshold.
@@ -361,43 +360,6 @@ def run_task(
                 _log(trace, "judge", "Evaluating progress")
                 verdict = judge.evaluate(question, steps_done, traced_llm, state=state)
             _log(trace, "judge", f"sufficient={verdict.sufficient}, action={verdict.action}, missing={verdict.missing}")
-
-            # Handle "verify" action: run verification code, then re-evaluate
-            if verdict.action == "verify" and verdict.verification_code:
-                verifications_done = 0
-                while (verdict.action == "verify"
-                       and verdict.verification_code
-                       and verifications_done < max_verifications_per_iter):
-                    verifications_done += 1
-                    _log(trace, "judge", f"Running verification code ({verifications_done})")
-                    with tracer.span("verification", metadata={"iteration": iteration}):
-                        v_result = sandbox.execute(
-                            verdict.verification_code,
-                            step_id=f"verify_{iteration}_{verifications_done}",
-                        )
-                    _log(trace, "judge", f"Verification rc={v_result.return_code}, stdout={v_result.stdout[:200]}")
-                    iter_obs[f"verification_{verifications_done}_stdout"] = v_result.stdout[:500]
-                    iter_obs[f"verification_{verifications_done}_stderr"] = v_result.stderr[:200] if v_result.return_code != 0 else ""
-
-                    # Inject verification result into state for re-evaluation
-                    verification_finding = f"Verification output: {v_result.stdout[:2000]}"
-                    if v_result.return_code != 0:
-                        verification_finding += f"\nVerification error: {v_result.stderr[:500]}"
-
-                    # Create a synthetic step record with verification result
-                    v_step = StepRecord(
-                        plan=PlanStep(step_description=f"Judge verification (iteration {iteration})"),
-                        code=verdict.verification_code,
-                        result=v_result,
-                        step_index=len(steps_done),
-                    )
-                    # Temporarily add to state for re-evaluation (don't persist)
-                    temp_state = add_step(state, v_step, verification_finding)
-
-                    # Re-evaluate with verification result
-                    with tracer.span("judge_post_verify", metadata={"iteration": iteration}):
-                        verdict = judge.evaluate(question, steps_done + [v_step], traced_llm, state=temp_state)
-                    _log(trace, "judge", f"Post-verify: sufficient={verdict.sufficient}, action={verdict.action}")
 
             iter_obs["judge_sufficient"] = verdict.sufficient
             iter_obs["judge_action"] = verdict.action

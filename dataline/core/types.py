@@ -91,12 +91,11 @@ class JudgeDecision:
     Replaces separate VerifierVerdict + RouterDecision with a single LLM call.
     """
     sufficient: bool
-    action: str  # continue | backtrack | finish | verify | replan
+    action: str  # continue | backtrack | finish | replan
     reasoning: str = ""
     missing: str = ""
     guidance_for_next_step: str = ""  # passed to Planner to steer next iteration
     truncate_to: int = 0
-    verification_code: str = ""  # Python code for independent verification (action="verify")
 
 
 @dataclass(frozen=True)

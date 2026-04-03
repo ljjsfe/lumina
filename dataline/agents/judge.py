@@ -64,7 +64,6 @@ def evaluate(
         missing=data.get("missing", ""),
         guidance_for_next_step=data.get("guidance_for_next_step", ""),
         truncate_to=data.get("truncate_to", 0),
-        verification_code=data.get("verification_code", ""),
     )
 
 

@@ -172,10 +172,10 @@ class Workspace:
             if guidance:
                 add("Judge Guidance (MUST ADDRESS in this step)", f"> **{guidance}**")
 
-        # 3. Answer schema (machine-readable expectations from QuestionAnalyzer)
+        # 3. Answer schema (guidance for planner and finalizer — NOT used for judge gates)
         schema = self._read("ANSWER_SCHEMA.md")
-        if schema and agent_role in ("judge", "planner", "finalizer"):
-            add("Answer Schema (from QuestionAnalyzer — structural checks)", schema)
+        if schema and agent_role in ("planner", "finalizer"):
+            add("Answer Schema (from QuestionAnalyzer)", schema)
 
         # 4. Analysis plan (strategy context)
         plan = self.read_analysis_plan()
