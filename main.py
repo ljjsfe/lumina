@@ -78,9 +78,6 @@ def main():
 def _cmd_run(args):
     """Run analysis on a single task."""
     from datetime import datetime
-    os.environ.setdefault("PHOENIX_PROJECT", f"single_{datetime.now():%Y%m%d_%H%M}")
-    _ensure_phoenix()
-
     config = _load_config(args.config)
     question = args.question
 
@@ -96,6 +93,7 @@ def _cmd_run(args):
             sys.exit(1)
 
     task_id = os.path.basename(os.path.normpath(args.task))
+    session_id = f"single__{task_id}__{datetime.now():%Y%m%d_%H%M%S}"
 
     from dataline.core.llm_client import create_client_from_config
     from dataline.agents.orchestrator import run_task
@@ -106,6 +104,7 @@ def _cmd_run(args):
     print(f"Running task: {task_id}")
     print(f"Question: {question}")
     print(f"Model: {config['llm']['provider']}/{config['llm']['model']}")
+    print(f"Session: {session_id}")
     print()
 
     out_dir = os.path.join(args.output, task_id)
@@ -119,6 +118,7 @@ def _cmd_run(args):
         task_id=task_id,
         output_dir=out_dir,
         benchmark=args.benchmark,
+        session_id=session_id,
     )
 
     pred_path = os.path.join(out_dir, "prediction.csv")
@@ -211,6 +211,7 @@ def _cmd_history(args):
 
 def _cmd_batch(args):
     """Run batch on KDD or DABstep tasks."""
+    from datetime import datetime
     config = _load_config(args.config)
     benchmark = args.benchmark.lower()
 
@@ -235,18 +236,19 @@ def _cmd_batch(args):
         except ValueError:
             print(f"Warning: unknown --sample value '{sample}', running full set", file=sys.stderr)
 
-    from datetime import datetime
-    os.environ["PHOENIX_PROJECT"] = f"{benchmark}_{sample}_{datetime.now():%Y%m%d_%H%M}"
-    _ensure_phoenix()
+    # One session_id shared across all tasks in this batch run
+    sample = getattr(args, "sample", "full")
+    session_id = f"{benchmark}__{sample}__{datetime.now():%Y%m%d_%H%M%S}"
+    print(f"Session: {session_id}")
 
     # Resolve parallelism: CLI flag > config.yaml > default 1
     if args.parallel is None:
         args.parallel = int(config.get("batch", {}).get("parallel", 1))
 
     if benchmark == "dabstep":
-        _batch_dabstep(args, config, run_task, save_prediction, create_client_from_config)
+        _batch_dabstep(args, config, run_task, save_prediction, create_client_from_config, session_id)
     else:
-        _batch_kdd(args, config, run_task, save_prediction, create_client_from_config)
+        _batch_kdd(args, config, run_task, save_prediction, create_client_from_config, session_id)
 
 
 def _random_sample(benchmark: str, data_dir: str, n: int) -> list[str]:
@@ -265,7 +267,7 @@ def _random_sample(benchmark: str, data_dir: str, n: int) -> list[str]:
     return rng.sample(all_ids, min(n, len(all_ids)))
 
 
-def _batch_kdd(args, config, run_task, save_prediction, create_client_from_config):
+def _batch_kdd(args, config, run_task, save_prediction, create_client_from_config, session_id: str = ""):
     """KDD Cup batch: task_dir per task, question from task.json.
 
     Supports parallel execution via args.parallel (resolved from config or CLI).
@@ -305,6 +307,7 @@ def _batch_kdd(args, config, run_task, save_prediction, create_client_from_confi
         result = run_task(
             task_dir=task_dir, question=question, llm=llm, config=config,
             task_id=task_id, output_dir=out_dir, benchmark="kdd",
+            session_id=session_id,
         )
 
         save_prediction(result.answer, os.path.join(out_dir, "prediction.csv"))
@@ -346,7 +349,7 @@ def _batch_kdd(args, config, run_task, save_prediction, create_client_from_confi
     print(f"  python main.py eval --benchmark kdd --results {args.output} --gold {args.data}")
 
 
-def _batch_dabstep(args, config, run_task, save_prediction, create_client_from_config):
+def _batch_dabstep(args, config, run_task, save_prediction, create_client_from_config, session_id: str = ""):
     """DABstep batch: shared context dir for all tasks, questions from dev_tasks.json.
 
     Supports parallel execution via --parallel N flag.
@@ -396,6 +399,7 @@ def _batch_dabstep(args, config, run_task, save_prediction, create_client_from_c
             output_dir=out_dir,
             benchmark="dabstep",
             guidelines=guidelines,
+            session_id=session_id,
         )
 
         save_prediction(result.answer, os.path.join(out_dir, "prediction.csv"))
@@ -515,43 +519,6 @@ def _save_trace(result, trace_path: str) -> None:
             "success": result.success,
             "error": result.error,
         }, f, indent=2, default=str, ensure_ascii=False)
-
-
-def _ensure_phoenix() -> bool:
-    """Auto-start Phoenix if not running. Returns True if Phoenix is available."""
-    import subprocess
-    import urllib.request
-
-    # Check if already running
-    try:
-        urllib.request.urlopen("http://localhost:6006/", timeout=2)
-        print("[Phoenix] Already running at http://localhost:6006")
-        return True
-    except Exception:
-        pass
-
-    # Try to start Phoenix in background
-    try:
-        proc = subprocess.Popen(
-            [sys.executable, "-m", "phoenix.server.main", "serve"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        # Wait briefly for startup
-        import time
-        for _ in range(10):
-            time.sleep(1)
-            try:
-                urllib.request.urlopen("http://localhost:6006/", timeout=2)
-                print(f"[Phoenix] Started (pid={proc.pid}) → http://localhost:6006")
-                return True
-            except Exception:
-                continue
-        print("[Phoenix] Failed to start — traces saved to JSON only", file=sys.stderr)
-        return False
-    except Exception as exc:
-        print(f"[Phoenix] Could not start: {exc} — traces saved to JSON only", file=sys.stderr)
-        return False
 
 
 def _load_config(path: str) -> dict:

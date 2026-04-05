@@ -65,6 +65,7 @@ def run_task(
     output_dir: str = "",
     benchmark: str = "kdd",
     guidelines: str = "",
+    session_id: str = "",
 ) -> TaskResult:
     """Run the full agent pipeline on a single task."""
     start_time = time.time()
@@ -76,7 +77,7 @@ def run_task(
     stagnation_threshold = config.get("agent", {}).get("stagnation_threshold", 2)
 
     # Initialize tracer for real-time progress + LLM I/O logging
-    tracer = TaskTracer(task_id, output_dir)
+    tracer = TaskTracer(task_id, output_dir, session_id=session_id)
     traced_llm = TracingLLMClient(llm, tracer)
 
     sandbox = Sandbox(
@@ -326,6 +327,7 @@ def run_task(
 
         # Persist workspace for post-run observability
         workspace.persist()
+        tracer.set_observations(obs)
         tracer.finish(success=True)
 
         return TaskResult(
@@ -346,6 +348,7 @@ def run_task(
         _log(trace, "error", str(e))
         obs["final"] = {"success": False, "error": str(e)}
         workspace.persist()  # persist even on failure for debugging
+        tracer.set_observations(obs)
         tracer.finish(success=False, error=str(e))
         return TaskResult(
             task_id=task_id,

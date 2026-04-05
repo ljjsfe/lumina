@@ -9,7 +9,4 @@ Pillow>=10.0
 pyarrow>=14.0
 pyyaml>=6.0
 python-dotenv>=1.0
-arize-phoenix>=8.0
-openinference-instrumentation
-opentelemetry-exporter-otlp-proto-http
-opentelemetry-sdk
+langfuse>=4.0

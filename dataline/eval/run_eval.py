@@ -60,7 +60,7 @@ def run_eval(
 
         # Load prediction
         pred_path = os.path.join(results_dir, task_id, "prediction.csv")
-        trace_path = os.path.join(results_dir, task_id, "trace.json")
+        trace_path = _find_trace(results_dir, task_id)
 
         if not os.path.exists(pred_path):
             ts = TaskScore(
@@ -220,6 +220,17 @@ def _generate_suggestions(
         )
 
     return suggestions
+
+
+def _find_trace(results_dir: str, task_id: str) -> str:
+    """Find trace file, supporting both new and legacy filenames."""
+    path = os.path.join(results_dir, task_id, "trace.json")
+    if os.path.exists(path):
+        return path
+    legacy = os.path.join(results_dir, task_id, "trace_detailed.json")
+    if os.path.exists(legacy):
+        return legacy
+    return path  # return default even if missing
 
 
 def format_report(report: EvalReport) -> str:

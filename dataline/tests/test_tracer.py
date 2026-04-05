@@ -111,23 +111,58 @@ class TestTaskTracer:
             assert data["task_id"] == "t1"
             assert data["status"] == "completed"
 
-    def test_writes_trace_detailed_json(self):
+    def test_writes_trace_json_with_layers(self):
         with tempfile.TemporaryDirectory() as td:
             tracer = TaskTracer("t1", output_dir=td)
-            with tracer.span("planner") as s:
+            with tracer.span("planner", metadata={"iteration": 0}) as s:
                 s.set_llm_io("sys", "user", "resp", input_tokens=10, output_tokens=5, cost_usd=0.001)
+
+            # Simulate orchestrator passing observations
+            tracer.set_observations({
+                "iterations": [{
+                    "iteration": 0,
+                    "plan_description": "Load CSV",
+                    "plan_sources": ["data.csv"],
+                    "code_success": True,
+                    "debug_retries": 0,
+                    "stdout_preview": "DataFrame: 100 rows",
+                    "judge_action": "finish",
+                    "judge_sufficient": True,
+                    "judge_reasoning": "Data loaded",
+                    "judge_missing": "",
+                    "judge_guidance": "",
+                }],
+                "final": {
+                    "code_failures": 0,
+                    "backtracks_used": 0,
+                    "total_debug_retries": 0,
+                    "stagnation_stops": False,
+                    "answer_columns": ["col1"],
+                    "answer_rows": 10,
+                },
+            })
             tracer.finish()
 
-            trace_path = os.path.join(td, "trace_detailed.json")
+            trace_path = os.path.join(td, "trace_agent.json")
             assert os.path.exists(trace_path)
             with open(trace_path) as f:
                 data = json.load(f)
-            assert data["task_id"] == "t1"
+
+            # L0: summary
+            assert data["summary"]["task_id"] == "t1"
+            assert data["summary"]["total_tokens"] == 15
+            assert data["summary"]["decision_path"] == "finish"
+            assert data["summary"]["answer_columns"] == ["col1"]
+
+            # L1: iteration summaries
+            assert len(data["iterations"]) == 1
+            assert data["iterations"][0]["plan"] == "Load CSV"
+            assert data["iterations"][0]["judge"]["action"] == "finish"
+
+            # L2: full spans
             assert len(data["spans"]) == 1
             assert data["spans"][0]["agent"] == "planner"
             assert "llm_input" in data["spans"][0]
-            assert "llm_output" in data["spans"][0]
-            assert data["total_tokens"] == 15
 
     def test_span_exception_captured(self):
         tracer = TaskTracer("t1")

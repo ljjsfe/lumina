@@ -1,16 +1,19 @@
-"""Structured tracing with optional Arize Phoenix integration.
+"""Structured tracing with optional Langfuse integration.
 
-Two purposes:
-1. **Real-time progress**: writes status.json to output dir for live monitoring
-2. **Post-hoc analysis**: exports OTEL-compatible spans (to Phoenix or JSON)
+Three-layer trace output:
+  L0 — Task summary: one glance to see pass/fail, bottleneck, decision path
+  L1 — Iteration summaries: per-loop plan → result → judge verdict
+  L2 — Full LLM I/O: raw prompts and responses for deep debugging
 
-Phoenix is an optional dependency. Without it, traces are saved as JSON.
-With it, spans are automatically pushed to Phoenix UI (localhost:6006).
+Langfuse is an optional dependency. Without it, traces are saved as JSON only.
+With it, spans are automatically pushed to Langfuse UI (localhost:3000).
 
 Usage in orchestrator:
     tracer = TaskTracer(task_id, output_dir)
-    with tracer.span("planner", metadata={"iteration": 0}):
+    with tracer.span("planner", metadata={"iteration": 0}) as s:
         result = planner.plan_next(...)
+        s.set_llm_io(system, user, response)
+    tracer.set_observations(obs)   # pass L0/L1 data from orchestrator
     tracer.finish()
 """
 
@@ -36,10 +39,9 @@ class Span:
     end_time: float
     duration_ms: int
     metadata: dict[str, Any] = field(default_factory=dict)
-    # LLM I/O (only for LLM call spans)
-    llm_input: str = ""           # system + user prompt (truncated)
-    llm_output: str = ""          # model response (truncated)
-    llm_thinking: str = ""        # extended thinking (Claude only)
+    llm_input: str = ""
+    llm_output: str = ""
+    llm_thinking: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
     cost_usd: float = 0.0
@@ -104,13 +106,16 @@ class SpanBuilder:
 class TaskTracer:
     """Traces a single task execution with real-time progress updates."""
 
-    def __init__(self, task_id: str, output_dir: str = ""):
+    def __init__(self, task_id: str, output_dir: str = "", session_id: str = ""):
         self._task_id = task_id
         self._output_dir = output_dir
         self._spans: list[Span] = []
         self._start_time = time.time()
         self._current_span: SpanBuilder | None = None
-        self._phoenix_tracer = _try_init_phoenix()
+        self._observations: dict[str, Any] = {}
+
+        # Langfuse (optional)
+        self._langfuse, self._lf_trace, self._lf_session_ctx = _try_init_langfuse(task_id, session_id)
 
         # Progress state
         self._progress = Progress(
@@ -132,13 +137,7 @@ class TaskTracer:
         *,
         metadata: dict[str, Any] | None = None,
     ) -> Generator[SpanBuilder, None, None]:
-        """Context manager that traces an agent operation.
-
-        Usage:
-            with tracer.span("planner", metadata={"iteration": 0}) as s:
-                result = planner.plan_next(...)
-                s.set_llm_io(system, user, response)
-        """
+        """Context manager that traces an agent operation."""
         builder = SpanBuilder(
             name=f"{self._task_id}/{agent}",
             agent=agent,
@@ -187,9 +186,9 @@ class TaskTracer:
             )
             self._write_progress()
 
-            # Push to Phoenix if available
-            if self._phoenix_tracer:
-                _push_span_to_phoenix(self._phoenix_tracer, span)
+            # Push to Langfuse if available
+            if self._lf_trace:
+                _push_span_to_langfuse(self._lf_trace, span)
 
     def set_iteration(self, iteration: int, total: int) -> None:
         """Update current iteration progress."""
@@ -207,6 +206,10 @@ class TaskTracer:
         )
         self._write_progress()
 
+    def set_observations(self, obs: dict[str, Any]) -> None:
+        """Receive structured observations from orchestrator for L0/L1 output."""
+        self._observations = obs
+
     def finish(self, success: bool = True, error: str = "") -> None:
         """Mark task as complete and write final trace."""
         self._progress = Progress(
@@ -222,7 +225,91 @@ class TaskTracer:
             message="Done" if success else f"Failed: {error}",
         )
         self._write_progress()
-        self._write_trace()
+        self._write_trace(success, error)
+
+        # Flush Langfuse
+        if self._langfuse:
+            try:
+                if self._lf_trace:
+                    summary = self._build_l0(success, error)
+                    self._lf_trace.update(
+                        metadata=summary,
+                        output={"success": success, "decision_path": summary.get("decision_path", "")},
+                        level="ERROR" if not success else "DEFAULT",
+                        status_message=error if error else None,
+                    )
+                    self._lf_trace.end()
+                if self._lf_session_ctx:
+                    self._lf_session_ctx.__exit__(None, None, None)
+                self._langfuse.flush()
+            except Exception as exc:
+                logger.debug("Langfuse flush failed: %s", exc)
+
+    def _build_l0(self, success: bool, error: str) -> dict[str, Any]:
+        """Build L0 task summary from observations and progress."""
+        obs = self._observations
+        final = obs.get("final", {})
+        iterations = obs.get("iterations", [])
+
+        # Build decision path: "continue → backtrack(1) → continue → finish"
+        decision_path = " → ".join(
+            i.get("judge_action", "?") for i in iterations
+        ) if iterations else ""
+
+        return {
+            "task_id": self._task_id,
+            "success": success,
+            "error": error,
+            "total_iterations": len(iterations),
+            "total_tokens": self._progress.tokens_used,
+            "total_cost_usd": round(self._progress.cost_usd, 4),
+            "time_seconds": round(self._progress.elapsed_seconds, 1),
+            "decision_path": decision_path,
+            "code_failures": final.get("code_failures", 0),
+            "backtracks_used": final.get("backtracks_used", 0),
+            "total_debug_retries": final.get("total_debug_retries", 0),
+            "stagnation_stop": final.get("stagnation_stops", False),
+            "answer_columns": final.get("answer_columns", []),
+            "answer_rows": final.get("answer_rows", 0),
+        }
+
+    def _build_l1(self) -> list[dict[str, Any]]:
+        """Build L1 iteration summaries from observations."""
+        iterations = self._observations.get("iterations", [])
+        summaries = []
+
+        for it in iterations:
+            # Collect span-level token/cost for this iteration
+            iter_idx = it.get("iteration", 0)
+            iter_spans = [
+                s for s in self._spans
+                if s.metadata.get("iteration") == iter_idx
+            ]
+            iter_tokens = sum(s.input_tokens + s.output_tokens for s in iter_spans)
+            iter_cost = sum(s.cost_usd for s in iter_spans)
+            iter_duration = sum(s.duration_ms for s in iter_spans)
+
+            summaries.append({
+                "iteration": iter_idx,
+                "plan": it.get("plan_description", ""),
+                "data_sources": it.get("plan_sources", []),
+                "code_success": it.get("code_success", False),
+                "debug_retries": it.get("debug_retries", 0),
+                "result_preview": it.get("stdout_preview", ""),
+                "error_preview": it.get("stderr_preview", ""),
+                "judge": {
+                    "action": it.get("judge_action", ""),
+                    "sufficient": it.get("judge_sufficient", False),
+                    "reasoning": it.get("judge_reasoning", ""),
+                    "missing": it.get("judge_missing", ""),
+                    "guidance": it.get("judge_guidance", ""),
+                },
+                "tokens": iter_tokens,
+                "cost_usd": round(iter_cost, 4),
+                "duration_ms": iter_duration,
+            })
+
+        return summaries
 
     def _write_progress(self) -> None:
         """Write real-time progress to status.json in output dir."""
@@ -236,20 +323,22 @@ class TaskTracer:
         except OSError as exc:
             logger.debug("Could not write progress: %s", exc)
 
-    def _write_trace(self) -> None:
-        """Write full trace with LLM I/O to trace_detailed.json."""
+    def _write_trace(self, success: bool, error: str) -> None:
+        """Write hierarchical trace: L0 summary + L1 iterations + L2 full spans."""
         if not self._output_dir:
             return
         try:
-            path = os.path.join(self._output_dir, "trace_detailed.json")
             data = {
-                "task_id": self._task_id,
-                "total_spans": len(self._spans),
-                "total_duration_ms": int((time.time() - self._start_time) * 1000),
-                "total_tokens": self._progress.tokens_used,
-                "total_cost_usd": round(self._progress.cost_usd, 4),
+                # L0: Task summary — scan in 5 seconds
+                "summary": self._build_l0(success, error),
+
+                # L1: Iteration summaries — understand the decision path
+                "iterations": self._build_l1(),
+
+                # L2: Full LLM I/O — deep debugging
                 "spans": [_span_to_dict(s) for s in self._spans],
             }
+            path = os.path.join(self._output_dir, "trace_agent.json")
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
         except OSError as exc:
@@ -293,63 +382,89 @@ class Progress:
         }
 
 
-# --- Phoenix integration (optional) ---
+# --- Langfuse integration (optional, SDK v4) ---
+#
+# v4 uses start_observation() / start_as_current_observation() instead of trace().
+# A root span represents the full task; each agent call is a child observation.
+# session_id is stored in metadata (not a first-class field in v4).
 
 
-def _try_init_phoenix() -> Any | None:
-    """Try to initialize Phoenix tracer. Returns None if not installed."""
+def _try_init_langfuse(
+    task_id: str, session_id: str = ""
+) -> tuple[Any | None, Any | None, Any | None]:
+    """Try to initialize Langfuse v4 client + root span.
+
+    Returns (client, root_obs, session_ctx) where session_ctx is a context
+    manager that must be exited when the task finishes. All three are None on
+    failure.
+    """
     try:
-        import os as _os
+        from langfuse import Langfuse, propagate_attributes
 
-        from opentelemetry import trace as otel_trace
-        from opentelemetry.sdk.trace import TracerProvider
-        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-        from opentelemetry.sdk.resources import Resource
-        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-        from openinference.semconv.resource import ResourceAttributes
+        langfuse = Langfuse()
 
-        project_name = _os.environ.get("PHOENIX_PROJECT", "dataline")
+        # Deterministic trace_id: re-runs of the same task in the same session
+        # produce the same trace_id, making it easy to find them in the UI.
+        seed = f"{session_id}__{task_id}" if session_id else task_id
+        trace_id = langfuse.create_trace_id(seed=seed)
+        trace_ctx = {"trace_id": trace_id}  # TraceContext TypedDict
 
-        resource = Resource.create({
-            ResourceAttributes.PROJECT_NAME: project_name,
-            "service.name": project_name,
-        })
-        provider = TracerProvider(resource=resource)
-        exporter = OTLPSpanExporter(endpoint="http://localhost:6006/v1/traces")
-        provider.add_span_processor(SimpleSpanProcessor(exporter))
-        otel_trace.set_tracer_provider(provider)
+        # propagate_attributes() sets session_id as a native OTEL attribute so
+        # traces appear in Langfuse's "Sessions" tab (not just metadata).
+        session_ctx: Any = None
+        if session_id:
+            session_ctx = propagate_attributes(session_id=session_id)
+            session_ctx.__enter__()
 
-        logger.info("Phoenix tracing enabled (http://localhost:6006) project=%s", project_name)
-        return otel_trace.get_tracer("dataline")
+        root_obs = langfuse.start_observation(
+            trace_context=trace_ctx,
+            name=task_id,
+            as_type="span",
+            metadata={
+                "task_id": task_id,
+                "framework": "dataline",
+            },
+        )
+        logger.info("Langfuse tracing enabled: task=%s session=%s", task_id, session_id or "(none)")
+        return langfuse, root_obs, session_ctx
     except ImportError:
-        logger.debug("Phoenix not installed — traces saved to JSON only")
-        return None
+        logger.debug("Langfuse not installed — traces saved to JSON only")
+        return None, None, None
     except Exception as exc:
-        logger.debug("Phoenix init failed: %s — traces saved to JSON only", exc)
-        return None
+        logger.debug("Langfuse init failed: %s — traces saved to JSON only", exc)
+        return None, None, None
 
 
-def _push_span_to_phoenix(tracer: Any, span: Span) -> None:
-    """Push a completed span to Phoenix via OTEL."""
+def _push_span_to_langfuse(root_obs: Any, span: Span) -> None:
+    """Push a completed span as a child observation of the root task span."""
     try:
-        with tracer.start_as_current_span(span.name) as otel_span:
-            otel_span.set_attribute("agent", span.agent)
-            otel_span.set_attribute("duration_ms", span.duration_ms)
-            otel_span.set_attribute("input_tokens", span.input_tokens)
-            otel_span.set_attribute("output_tokens", span.output_tokens)
-            otel_span.set_attribute("cost_usd", span.cost_usd)
-            if span.llm_input:
-                otel_span.set_attribute("llm.input", span.llm_input)
-            if span.llm_output:
-                otel_span.set_attribute("llm.output", span.llm_output)
-            if span.llm_thinking:
-                otel_span.set_attribute("llm.thinking", span.llm_thinking)
-            if span.error:
-                otel_span.set_attribute("error", span.error)
-            for k, v in span.metadata.items():
-                otel_span.set_attribute(f"meta.{k}", str(v))
+        if span.llm_input:
+            obs = root_obs.start_observation(
+                name=span.agent,
+                as_type="generation",
+                input=span.llm_input,
+                output=span.llm_output,
+                metadata=span.metadata,
+                usage_details={
+                    "input": span.input_tokens,
+                    "output": span.output_tokens,
+                    "total": span.input_tokens + span.output_tokens,
+                },
+                cost_details={"total": span.cost_usd} if span.cost_usd else None,
+                level="ERROR" if span.error else "DEFAULT",
+                status_message=span.error if span.error else None,
+            )
+        else:
+            obs = root_obs.start_observation(
+                name=span.agent,
+                as_type="span",
+                metadata=span.metadata,
+                level="ERROR" if span.error else "DEFAULT",
+                status_message=span.error if span.error else None,
+            )
+        obs.end(end_time=int(span.end_time * 1000))
     except Exception as exc:
-        logger.debug("Failed to push span to Phoenix: %s", exc)
+        logger.debug("Failed to push span to Langfuse: %s", exc)
 
 
 # --- Helpers ---
