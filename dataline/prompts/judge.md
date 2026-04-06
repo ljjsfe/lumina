@@ -43,7 +43,7 @@ If you detect a logic error, choose "backtrack" or "continue" with specific corr
    Signatures in stdout: `df.head()`, `df.describe()`, `df.columns`, `df.dtypes`, `df.info()`, `PRAGMA table_info`.
 2. **Step only showed intermediate results** — e.g., filtered a DataFrame but didn't compute the final metric.
    Signatures: stdout shows a DataFrame printout (aligned columns) but no scalar answering the question.
-3. **Output says "Not Applicable" or "no matching data"** without verifying the data thoroughly (try alternative column names, values, or filters first)
+3. **Output says "Not Applicable" or "no matching data"** — this is ONLY acceptable if the code ran successfully AND the data genuinely does not contain the answer. If the code errored, timed out, or returned 0 rows due to a wrong filter, "Not Applicable" is WRONG — choose "continue" or "backtrack" to retry with a different approach
 4. **The answer hasn't been explicitly computed** — if the question asks "what is the average fee", the stdout must contain the actual average number
 5. **A WARNING or 0-row count appeared** — this means the logic may be wrong.
    Signatures: `0 rows`, `Empty DataFrame`, `No matches`, `After filter: 0`.

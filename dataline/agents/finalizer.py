@@ -6,8 +6,10 @@ import json
 import re
 from pathlib import Path
 
+from ..core.context_manager import ContextManager, Section
 from ..core.llm_client import LLMClient
 from ..core.state import render_for_agent
+from ..core.token_estimator import cap_text
 from ..core.types import AnalysisState, StepRecord
 
 
@@ -17,6 +19,7 @@ def format_answer(
     llm: LLMClient,
     *,
     state: AnalysisState | None = None,
+    cm: ContextManager | None = None,
     benchmark: str = "kdd",
     guidelines: str = "",
 ) -> dict:
@@ -24,12 +27,11 @@ def format_answer(
 
     If benchmark == "dabstep", uses a scalar-answer prompt and returns {"answer": [val]}.
     If benchmark == "kdd" (default), uses table-format prompt and returns {"col": [values]}.
-    If state is provided, uses full_step_details for maximum context.
-    Otherwise falls back to legacy steps_done formatting.
+    If state + cm are provided, uses budget-managed context via ContextManager.
     """
     if benchmark == "dabstep":
-        return _format_dabstep(question, steps_done, llm, state=state, guidelines=guidelines)
-    return _format_kdd(question, steps_done, llm, state=state)
+        return _format_dabstep(question, steps_done, llm, state=state, cm=cm, guidelines=guidelines)
+    return _format_kdd(question, steps_done, llm, state=state, cm=cm)
 
 
 def _format_kdd(
@@ -38,12 +40,33 @@ def _format_kdd(
     llm: LLMClient,
     *,
     state: AnalysisState | None = None,
+    cm: ContextManager | None = None,
 ) -> dict:
-    """KDD table-format answer (original logic)."""
+    """KDD table-format answer (original logic).
+
+    Fast path: if the last successful step's stdout already contains a clean
+    structured answer (JSON dict/list, or a simple printed table), extract it
+    directly without an LLM call.  This avoids the LLM rewriting numbers
+    (precision loss) and reduces cost.
+    """
+    # --- Fast path: try direct extraction from stdout ---
+    direct = _try_direct_extract(steps_done, state)
+    if direct is not None:
+        return direct
+
+    # --- Slow path: LLM formatting ---
     prompt_path = Path(__file__).parent.parent / "prompts" / "finalizer.md"
     template = prompt_path.read_text(encoding="utf-8")
 
-    if state is not None:
+    if state is not None and cm is not None:
+        sections = _build_sections(state)
+        context = cm.assemble(sections, llm=llm)
+        system_prompt = (
+            template
+            .replace("{question}", state.question)
+            .replace("{steps_summary}", context)
+        )
+    elif state is not None:
         context = render_for_agent(state, "finalizer")
         system_prompt = (
             template
@@ -75,13 +98,33 @@ def _format_dabstep(
     llm: LLMClient,
     *,
     state: AnalysisState | None = None,
+    cm: ContextManager | None = None,
     guidelines: str = "",
 ) -> dict:
-    """DABstep scalar-answer format."""
+    """DABstep scalar-answer format.
+
+    Fast path: if the last successful step's stdout contains a single clear
+    scalar value (number, short string), extract it directly.
+    """
+    # --- Fast path: try direct scalar extraction ---
+    direct_scalar = _try_direct_scalar_extract(steps_done, state)
+    if direct_scalar is not None:
+        return {"answer": [direct_scalar]}
+
+    # --- Slow path: LLM formatting ---
     prompt_path = Path(__file__).parent.parent / "prompts" / "finalizer_dabstep.md"
     template = prompt_path.read_text(encoding="utf-8")
 
-    if state is not None:
+    if state is not None and cm is not None:
+        sections = _build_sections(state)
+        context = cm.assemble(sections, llm=llm)
+        system_prompt = (
+            template
+            .replace("{question}", state.question)
+            .replace("{guidelines}", guidelines)
+            .replace("{steps_summary}", context)
+        )
+    elif state is not None:
         context = render_for_agent(state, "finalizer")
         system_prompt = (
             template
@@ -110,6 +153,177 @@ def _format_dabstep(
         if cleaned:
             return {"answer": [cleaned]}
         return _fallback_extract(steps_done, state)
+
+
+def _last_successful_stdout(
+    steps_done: list[StepRecord],
+    state: AnalysisState | None,
+) -> str | None:
+    """Return stdout from the last step with return_code == 0, or None."""
+    details = state.full_step_details if state is not None else tuple(steps_done)
+    for step in reversed(details):
+        if step.result.return_code == 0 and step.result.stdout.strip():
+            return step.result.stdout.strip()
+    return None
+
+
+def _try_direct_extract(
+    steps_done: list[StepRecord],
+    state: AnalysisState | None,
+) -> dict | None:
+    """Try to extract a structured answer directly from the last successful stdout.
+
+    Returns a dict {"col": [values]} on success, None if LLM formatting is needed.
+
+    Handles:
+    - stdout that IS valid JSON (e.g., {"columns": {...}} or {"col": [...]})
+    - stdout whose last non-empty line is a JSON object
+    - stdout that contains ANSWER: <json> marker
+    """
+    stdout = _last_successful_stdout(steps_done, state)
+    if stdout is None:
+        return None
+
+    # Check for explicit ANSWER marker (coder can print this)
+    answer_match = re.search(r"ANSWER:\s*(\{.*\})", stdout, re.DOTALL)
+    if answer_match:
+        try:
+            data = json.loads(answer_match.group(1))
+            if "columns" in data:
+                return data["columns"]
+            # Must be a dict of column->list
+            if isinstance(data, dict) and all(isinstance(v, list) for v in data.values()):
+                return data
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # Try parsing the entire stdout as JSON
+    try:
+        data = json.loads(stdout)
+        if isinstance(data, dict):
+            if "columns" in data:
+                return data["columns"]
+            if all(isinstance(v, list) for v in data.values()):
+                return data
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Try parsing just the last non-empty line
+    lines = [ln for ln in stdout.split("\n") if ln.strip()]
+    if lines:
+        last_line = lines[-1].strip()
+        try:
+            data = json.loads(last_line)
+            if isinstance(data, dict):
+                if "columns" in data:
+                    return data["columns"]
+                if all(isinstance(v, list) for v in data.values()):
+                    return data
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    return None
+
+
+def _try_direct_scalar_extract(
+    steps_done: list[StepRecord],
+    state: AnalysisState | None,
+) -> str | None:
+    """Try to extract a scalar answer directly from the last successful stdout.
+
+    Returns the scalar value as a string, or None if LLM formatting is needed.
+
+    Handles:
+    - stdout whose last non-empty line is a single value (number or short string)
+    - stdout with ANSWER: <value> marker
+    - stdout that is a JSON {"answer": value}
+    """
+    stdout = _last_successful_stdout(steps_done, state)
+    if stdout is None:
+        return None
+
+    # Check for explicit ANSWER marker
+    answer_match = re.search(r"ANSWER:\s*(.+)", stdout)
+    if answer_match:
+        val = answer_match.group(1).strip()
+        # Try as JSON first
+        try:
+            data = json.loads(val)
+            if isinstance(data, dict) and "answer" in data:
+                return str(data["answer"])
+            return str(data)
+        except (json.JSONDecodeError, ValueError):
+            if len(val) < 200:
+                return val
+
+    # Try parsing entire stdout as JSON {"answer": ...}
+    try:
+        data = json.loads(stdout)
+        if isinstance(data, dict) and "answer" in data:
+            return str(data["answer"])
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Last non-empty line as scalar (if it's short and looks like a value)
+    lines = [ln for ln in stdout.split("\n") if ln.strip()]
+    if lines:
+        last_line = lines[-1].strip()
+        # Accept if it's a number, a short string, or a multiple-choice answer
+        if len(last_line) < 200 and not last_line.startswith(("    ", "\t", "Step", "Warning", "Error")):
+            # Reject if it looks like a DataFrame printout or code
+            if not re.search(r"\s{3,}\S", last_line):
+                return last_line
+
+    return None
+
+
+def _build_sections(state: AnalysisState) -> list[Section]:
+    """Build prioritized sections for finalizer context.
+
+    Excludes question (already in template {question}).
+    """
+    sections: list[Section] = []
+
+    if state.domain_rules:
+        sections.append(Section(
+            "domain_rules", state.domain_rules,
+            priority=80, heading="## Domain Rules",
+        ))
+
+    # Step results: split into earlier steps (compressible) and last step (non-compressible).
+    # The last step's output contains the final answer — must not be compressed.
+    if state.full_step_details:
+        if len(state.full_step_details) > 1:
+            earlier_parts = []
+            for s in state.full_step_details[:-1]:
+                stdout = cap_text(s.result.stdout) if s.result.stdout else "(no output)"
+                earlier_parts.append(
+                    f"Step {s.step_index}: {s.plan.step_description}\n"
+                    f"  Output:\n{stdout}"
+                )
+            sections.append(Section(
+                "earlier_step_results", "\n\n".join(earlier_parts),
+                priority=75, heading="## Earlier Step Results",
+            ))
+
+        last = state.full_step_details[-1]
+        last_stdout = cap_text(last.result.stdout) if last.result.stdout else "(no output)"
+        sections.append(Section(
+            "last_step_result",
+            f"Step {last.step_index}: {last.plan.step_description}\n"
+            f"  Output:\n{last_stdout}",
+            priority=95, compressible=False,
+            heading="## Latest Step Result (primary answer source)",
+        ))
+
+    if state.key_findings:
+        sections.append(Section(
+            "key_findings",
+            "\n".join(f"- {f}" for f in state.key_findings),
+            priority=70, heading="## Key Findings",
+        ))
+
+    return sections
 
 
 def _format_steps(steps: list[StepRecord]) -> str:

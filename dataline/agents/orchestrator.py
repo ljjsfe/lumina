@@ -13,6 +13,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..core.context_manager import ContextManager
 from ..core.llm_client import LLMClient
 from ..core.sandbox import Sandbox
 from ..core.state import (
@@ -89,6 +90,10 @@ def run_task(
     # Workspace: file-based state, persisted to output_dir/workspace/
     workspace = Workspace(temp_dir=sandbox.temp_dir, output_dir=output_dir)
 
+    # Context manager: enforces token budget across all agent calls
+    context_window = config.get("llm", {}).get("context_window", 262_144)
+    cm = ContextManager(token_limit=context_window)
+
     obs: dict[str, Any] = {
         "profiler": {},
         "analyzer": {},
@@ -116,8 +121,20 @@ def run_task(
         # 2. Analyze (deep profiling via code + domain rule extraction)
         with tracer.span("analyzer"):
             _log(trace, "analyzer", "Running deep data analysis")
-            data_profile, domain_rules = analyzer.analyze(manifest, traced_llm, sandbox)
-            _log(trace, "analyzer", f"Profile: {len(data_profile)} chars, domain rules: {len(domain_rules)} chars")
+            data_profile, domain_rules_raw = analyzer.analyze(manifest, traced_llm, sandbox)
+            _log(trace, "analyzer", f"Profile: {len(data_profile)} chars, domain rules: {len(domain_rules_raw)} chars")
+
+        # 2b. Compile domain rules if they exceed budget fraction
+        # Layer 1 compilation: recall-priority, question-agnostic
+        with tracer.span("domain_compiler"):
+            domain_rules = analyzer.compile_domain_rules(
+                domain_rules_raw, traced_llm, cm.budget_tokens,
+            )
+            if len(domain_rules) < len(domain_rules_raw):
+                _log(trace, "domain_compiler",
+                     f"Compiled: {len(domain_rules_raw)} → {len(domain_rules)} chars")
+            else:
+                _log(trace, "domain_compiler", "No compilation needed")
 
         # Write to workspace for file-based access
         workspace.write_domain_rules(domain_rules)
@@ -126,6 +143,8 @@ def run_task(
         obs["analyzer"] = {
             "profile_length_chars": len(data_profile),
             "domain_rules_length_chars": len(domain_rules),
+            "domain_rules_raw_chars": len(domain_rules_raw),
+            "domain_rules_compiled": len(domain_rules) < len(domain_rules_raw),
             "analysis_success": len(data_profile) > 50,
             "profile_quality": "rich" if len(data_profile) > 500 else ("sparse" if len(data_profile) > 50 else "failed"),
         }
@@ -170,7 +189,7 @@ def run_task(
                 _log(trace, "planner", "Planning next step")
                 plan_step = planner.plan_next(
                     question, manifest_json, data_profile, steps_done, traced_llm,
-                    state=state,
+                    state=state, cm=cm,
                 )
             _log(trace, "planner", f"Plan: {plan_step.step_description}")
             iter_obs["plan_description"] = plan_step.step_description
@@ -179,7 +198,7 @@ def run_task(
             # Generate code
             with tracer.span("coder", metadata={"iteration": iteration}):
                 _log(trace, "coder", "Generating code")
-                code = coder.generate(plan_step, manifest_json, steps_done, traced_llm, state=state)
+                code = coder.generate(plan_step, manifest_json, steps_done, traced_llm, state=state, cm=cm)
             _log(trace, "coder", f"Code length: {len(code)} chars")
 
             # Pre-execution validation: check column references against manifest
@@ -205,7 +224,7 @@ def run_task(
                     with tracer.span("debugger", metadata={"retry": retry}):
                         fixed_code = debugger.fix(
                             code, result, manifest_json, data_profile, traced_llm,
-                            state=state,
+                            state=state, cm=cm,
                             retry_number=retry,
                             previous_attempts=previous_attempts,
                         )
@@ -239,10 +258,11 @@ def run_task(
             state = add_step(state, step_record, finding)
             workspace.append_progress(iteration, plan_step.step_description, finding)
 
+
             # Judge: combined sufficiency check + routing + guidance (single LLM call)
             with tracer.span("judge", metadata={"iteration": iteration}):
                 _log(trace, "judge", "Evaluating progress")
-                verdict = judge.evaluate(question, steps_done, traced_llm, state=state)
+                verdict = judge.evaluate(question, steps_done, traced_llm, state=state, cm=cm)
             _log(trace, "judge", f"sufficient={verdict.sufficient}, action={verdict.action}, missing={verdict.missing}")
 
             iter_obs["judge_sufficient"] = verdict.sufficient
@@ -298,13 +318,28 @@ def run_task(
                     stagnation_count = 0
 
                 if stagnation_count >= stagnation_threshold:
-                    _log(trace, "orchestrator", f"Early stop: {stagnation_count} stagnation signals")
-                    break
+                    # Instead of giving up, force the planner to change strategy.
+                    # Only truly stop if we've already forced a strategy change
+                    # and it still didn't help (stagnation_count doubles the threshold).
+                    if stagnation_count >= stagnation_threshold * 2:
+                        _log(trace, "orchestrator", f"Early stop: {stagnation_count} stagnation signals despite strategy change")
+                        break
+                    _log(trace, "orchestrator",
+                         f"Stagnation detected ({stagnation_count} signals). "
+                         f"Forcing planner to change strategy.")
+                    judge_guidance = (
+                        f"MANDATORY STRATEGY CHANGE: The previous approach has failed "
+                        f"{stagnation_count} consecutive times. You MUST use a completely "
+                        f"different strategy. Do NOT repeat the same type of code, query, "
+                        f"or filtering logic. Try: different column names, different join "
+                        f"strategy, alternative data loading method, or re-read the raw "
+                        f"data from scratch."
+                    )
 
         # 6. Finalize
         with tracer.span("finalizer"):
             _log(trace, "finalizer", "Formatting answer")
-            answer = finalizer.format_answer(question, steps_done, traced_llm, state=state, benchmark=benchmark, guidelines=guidelines)
+            answer = finalizer.format_answer(question, steps_done, traced_llm, state=state, cm=cm, benchmark=benchmark, guidelines=guidelines)
         _log(trace, "finalizer", f"Answer columns: {list(answer.keys())}")
 
         elapsed = time.time() - start_time
