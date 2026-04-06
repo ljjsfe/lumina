@@ -175,52 +175,25 @@ def _try_direct_extract(
 
     Returns a dict {"col": [values]} on success, None if LLM formatting is needed.
 
-    Handles:
-    - stdout that IS valid JSON (e.g., {"columns": {...}} or {"col": [...]})
-    - stdout whose last non-empty line is a JSON object
-    - stdout that contains ANSWER: <json> marker
+    Only fires on unambiguous JSON structures — never guesses from free-text output.
     """
     stdout = _last_successful_stdout(steps_done, state)
     if stdout is None:
         return None
 
-    # Check for explicit ANSWER marker (coder can print this)
-    answer_match = re.search(r"ANSWER:\s*(\{.*\})", stdout, re.DOTALL)
-    if answer_match:
+    # Strategy: try parsing as JSON at two granularities (whole stdout, last line).
+    # Only accept dict-of-lists shapes that look like a table answer.
+    for candidate in _json_candidates(stdout):
         try:
-            data = json.loads(answer_match.group(1))
-            if "columns" in data:
-                return data["columns"]
-            # Must be a dict of column->list
-            if isinstance(data, dict) and all(isinstance(v, list) for v in data.values()):
-                return data
+            data = json.loads(candidate)
         except (json.JSONDecodeError, ValueError):
-            pass
-
-    # Try parsing the entire stdout as JSON
-    try:
-        data = json.loads(stdout)
-        if isinstance(data, dict):
-            if "columns" in data:
-                return data["columns"]
-            if all(isinstance(v, list) for v in data.values()):
-                return data
-    except (json.JSONDecodeError, ValueError):
-        pass
-
-    # Try parsing just the last non-empty line
-    lines = [ln for ln in stdout.split("\n") if ln.strip()]
-    if lines:
-        last_line = lines[-1].strip()
-        try:
-            data = json.loads(last_line)
-            if isinstance(data, dict):
-                if "columns" in data:
-                    return data["columns"]
-                if all(isinstance(v, list) for v in data.values()):
-                    return data
-        except (json.JSONDecodeError, ValueError):
-            pass
+            continue
+        if not isinstance(data, dict):
+            continue
+        if "columns" in data and isinstance(data["columns"], dict):
+            return data["columns"]
+        if all(isinstance(v, list) for v in data.values()) and data:
+            return data
 
     return None
 
@@ -233,48 +206,30 @@ def _try_direct_scalar_extract(
 
     Returns the scalar value as a string, or None if LLM formatting is needed.
 
-    Handles:
-    - stdout whose last non-empty line is a single value (number or short string)
-    - stdout with ANSWER: <value> marker
-    - stdout that is a JSON {"answer": value}
+    Only fires on unambiguous JSON {"answer": ...} — never guesses from free text.
     """
     stdout = _last_successful_stdout(steps_done, state)
     if stdout is None:
         return None
 
-    # Check for explicit ANSWER marker
-    answer_match = re.search(r"ANSWER:\s*(.+)", stdout)
-    if answer_match:
-        val = answer_match.group(1).strip()
-        # Try as JSON first
+    for candidate in _json_candidates(stdout):
         try:
-            data = json.loads(val)
-            if isinstance(data, dict) and "answer" in data:
-                return str(data["answer"])
-            return str(data)
+            data = json.loads(candidate)
         except (json.JSONDecodeError, ValueError):
-            if len(val) < 200:
-                return val
-
-    # Try parsing entire stdout as JSON {"answer": ...}
-    try:
-        data = json.loads(stdout)
+            continue
         if isinstance(data, dict) and "answer" in data:
             return str(data["answer"])
-    except (json.JSONDecodeError, ValueError):
-        pass
-
-    # Last non-empty line as scalar (if it's short and looks like a value)
-    lines = [ln for ln in stdout.split("\n") if ln.strip()]
-    if lines:
-        last_line = lines[-1].strip()
-        # Accept if it's a number, a short string, or a multiple-choice answer
-        if len(last_line) < 200 and not last_line.startswith(("    ", "\t", "Step", "Warning", "Error")):
-            # Reject if it looks like a DataFrame printout or code
-            if not re.search(r"\s{3,}\S", last_line):
-                return last_line
 
     return None
+
+
+def _json_candidates(stdout: str) -> list[str]:
+    """Yield JSON candidate strings from stdout: whole text, then last non-empty line."""
+    candidates = [stdout]
+    lines = [ln for ln in stdout.split("\n") if ln.strip()]
+    if lines and lines[-1].strip() != stdout:
+        candidates.append(lines[-1].strip())
+    return candidates
 
 
 def _build_sections(state: AnalysisState) -> list[Section]:
