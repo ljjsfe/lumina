@@ -169,6 +169,8 @@ def run_task(
         steps_done: list[StepRecord] = []
         backtracks_used = 0
         stagnation_count = 0
+        strategy_changes_used = 0
+        max_strategy_changes = 1  # allow one forced pivot, then stop
 
         # Track judge guidance for planner
         judge_guidance = ""
@@ -318,15 +320,15 @@ def run_task(
                     stagnation_count = 0
 
                 if stagnation_count >= stagnation_threshold:
-                    # Instead of giving up, force the planner to change strategy.
-                    # Only truly stop if we've already forced a strategy change
-                    # and it still didn't help (stagnation_count doubles the threshold).
-                    if stagnation_count >= stagnation_threshold * 2:
-                        _log(trace, "orchestrator", f"Early stop: {stagnation_count} stagnation signals despite strategy change")
+                    if strategy_changes_used >= max_strategy_changes:
+                        _log(trace, "orchestrator",
+                             f"Early stop: stagnation persists after "
+                             f"{strategy_changes_used} strategy changes")
                         break
+                    strategy_changes_used += 1
                     _log(trace, "orchestrator",
                          f"Stagnation detected ({stagnation_count} signals). "
-                         f"Forcing planner to change strategy.")
+                         f"Forcing strategy change #{strategy_changes_used}.")
                     judge_guidance = (
                         f"MANDATORY STRATEGY CHANGE: The previous approach has failed "
                         f"{stagnation_count} consecutive times. You MUST use a completely "
@@ -335,6 +337,7 @@ def run_task(
                         f"strategy, alternative data loading method, or re-read the raw "
                         f"data from scratch."
                     )
+                    stagnation_count = 0  # clean window for new strategy
 
         # 6. Finalize
         with tracer.span("finalizer"):
