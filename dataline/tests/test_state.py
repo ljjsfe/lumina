@@ -6,7 +6,6 @@ from dataline.core.state import (
     add_step,
     compress_manifest,
     create_initial_state,
-    render_for_agent,
     summarize_step_output,
     truncate_to_step,
     update_judge_guidance,
@@ -183,65 +182,6 @@ class TestTruncateToStep:
         assert len(truncated.completed_steps) == 1
         assert len(truncated.full_step_details) == 1
 
-
-# --- render_for_agent ---
-
-
-class TestRenderForAgent:
-    def _build_state(self) -> AnalysisState:
-        manifest = _make_manifest()
-        state = create_initial_state("t", "What is the total?", manifest, "profile text")
-        state = add_step(state, _make_step(0, "Load data", "100 rows loaded"), "Loaded 100 rows")
-        return state
-
-    def test_planner_partial_view(self):
-        """Planner render is PARTIAL — only execution state, no question/manifest."""
-        state = self._build_state()
-        rendered = render_for_agent(state, "planner")
-
-        # Planner view should include execution state
-        assert "Key Findings" in rendered
-        assert "Completed Steps" in rendered
-        # Question/manifest NOT included (planner.py template handles those)
-        assert "Data Sources" not in rendered
-
-    def test_coder_includes_variables(self):
-        state = self._build_state()
-        rendered = render_for_agent(state, "coder")
-
-        assert "Data Sources" in rendered
-
-    def test_verifier_includes_findings_and_output(self):
-        state = self._build_state()
-        rendered = render_for_agent(state, "verifier")
-
-        assert "Key Findings" in rendered
-        assert "Latest Step Output" in rendered
-
-    def test_finalizer_includes_full_details(self):
-        state = self._build_state()
-        rendered = render_for_agent(state, "finalizer")
-
-        assert "All Step Results" in rendered
-        assert "100 rows loaded" in rendered
-
-    def test_debugger_minimal_context(self):
-        state = self._build_state()
-        rendered = render_for_agent(state, "debugger")
-
-        assert "Data Sources" in rendered
-        # Debugger should NOT get step history
-        assert "Key Findings" not in rendered
-
-    def test_different_agents_get_different_views(self):
-        state = self._build_state()
-
-        planner_view = render_for_agent(state, "planner")
-        coder_view = render_for_agent(state, "coder")
-        debugger_view = render_for_agent(state, "debugger")
-
-        assert planner_view != coder_view
-        assert coder_view != debugger_view
 
 
 # --- summarize_step_output ---

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from ..core.context_manager import ContextManager, Section
 from ..core.llm_client import LLMClient
-from ..core.state import render_for_agent
+
 from ..core.types import AnalysisState, SandboxResult
 
 
@@ -37,8 +37,6 @@ def fix(
     if state is not None and cm is not None:
         sections = _build_sections(state)
         data_context = cm.assemble(sections, llm=llm)
-    elif state is not None:
-        data_context = render_for_agent(state, "debugger")
     else:
         data_context = f"Manifest:\n{manifest_json[:3000]}\n\nProfile:\n{data_profile[:2000]}"
 

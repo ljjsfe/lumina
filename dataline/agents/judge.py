@@ -15,7 +15,7 @@ from pathlib import Path
 
 from ..core.context_manager import ContextManager, Section
 from ..core.llm_client import LLMClient
-from ..core.state import render_for_agent
+
 from ..core.token_estimator import cap_text
 from ..core.types import AnalysisState, JudgeDecision, StepRecord
 
@@ -46,13 +46,6 @@ def evaluate(
             .replace("{analysis_context}", context)
         )
 
-    elif state is not None:
-        context = render_for_agent(state, "judge")
-        system_prompt = (
-            template
-            .replace("{question}", state.question)
-            .replace("{analysis_context}", context)
-        )
     else:
         context = _format_steps(steps_done)
         system_prompt = (

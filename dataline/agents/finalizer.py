@@ -8,7 +8,7 @@ from pathlib import Path
 
 from ..core.context_manager import ContextManager, Section
 from ..core.llm_client import LLMClient
-from ..core.state import render_for_agent
+
 from ..core.token_estimator import cap_text
 from ..core.types import AnalysisState, StepRecord
 
@@ -66,13 +66,6 @@ def _format_kdd(
             .replace("{question}", state.question)
             .replace("{steps_summary}", context)
         )
-    elif state is not None:
-        context = render_for_agent(state, "finalizer")
-        system_prompt = (
-            template
-            .replace("{question}", state.question)
-            .replace("{steps_summary}", context)
-        )
     else:
         steps_summary = _format_steps(steps_done)
         system_prompt = (
@@ -118,14 +111,6 @@ def _format_dabstep(
     if state is not None and cm is not None:
         sections = _build_sections(state)
         context = cm.assemble(sections, llm=llm)
-        system_prompt = (
-            template
-            .replace("{question}", state.question)
-            .replace("{guidelines}", guidelines)
-            .replace("{steps_summary}", context)
-        )
-    elif state is not None:
-        context = render_for_agent(state, "finalizer")
         system_prompt = (
             template
             .replace("{question}", state.question)

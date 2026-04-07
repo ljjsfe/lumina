@@ -8,7 +8,7 @@ from pathlib import Path
 
 from ..core.context_manager import ContextManager, Section
 from ..core.llm_client import LLMClient
-from ..core.state import render_for_agent
+
 from ..core.token_estimator import cap_text
 from ..core.types import AnalysisState, PlanStep, StepRecord
 
@@ -51,14 +51,6 @@ def generate(
             .replace("{prior_results_summary}", context)
         )
 
-    elif state is not None:
-        context = render_for_agent(state, "coder")
-        system_prompt = (
-            template
-            .replace("{plan_step}", plan_json)
-            .replace("{manifest_json}", state.manifest_summary)
-            .replace("{prior_results_summary}", context)
-        )
     else:
         prior_summary = _format_prior_results(steps_done)
         system_prompt = (

@@ -64,16 +64,3 @@ List the top 2–3 failure modes most likely for THIS specific question:
 - e.g., "Column 'gender' has values 'M'/'F' not 'male'/'female'"
 - e.g., "Question says 'average' but data only has counts — need to compute from raw"
 
----
-
-## ANSWER_SCHEMA (MANDATORY — machine-readable block)
-
-```json
-ANSWER_SCHEMA
-{
-  "sub_questions": ["Q1: description", "Q2: description"],
-  "expected_answer_type": "scalar|list|table",
-  "expected_columns": ["col1", "col2"],
-  "domain_rules_applied": ["rule1 summary", "rule2 summary"]
-}
-```

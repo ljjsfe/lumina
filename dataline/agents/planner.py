@@ -7,7 +7,7 @@ from pathlib import Path
 
 from ..core.context_manager import ContextManager, Section
 from ..core.llm_client import LLMClient
-from ..core.state import render_for_agent
+
 from ..core.types import AnalysisState, PlanStep, StepRecord
 
 
@@ -36,31 +36,6 @@ def plan_next(
         context = cm.assemble(sections, llm=llm)
         system_prompt = template.replace("{context}", context)
 
-    elif state is not None:
-        # Legacy state path (no CM)
-        context_parts = []
-        context_parts.append(f"## Question\n{state.question}")
-
-        if state.judge_guidance:
-            context_parts.append(
-                f"## Judge Guidance (MUST ADDRESS in this step)\n"
-                f"> **{state.judge_guidance}**"
-            )
-
-        context_parts.append(f"## Data Sources\n{state.manifest_summary}")
-
-        if state.domain_rules:
-            context_parts.append(f"## Domain Rules (from documentation)\n{state.domain_rules}")
-
-        if state.data_profile_summary:
-            context_parts.append(f"## Data Profile\n{state.data_profile_summary}")
-
-        exec_context = render_for_agent(state, "planner")
-        if exec_context:
-            context_parts.append(exec_context)
-
-        context = "\n\n".join(context_parts)
-        system_prompt = template.replace("{context}", context)
     else:
         # Legacy path: build context from individual arguments
         context_parts = []

@@ -14,7 +14,6 @@ from dataline.core.types import (
 from dataline.core.state import (
     add_step,
     create_initial_state,
-    render_for_agent,
     update_judge_guidance,
 )
 
@@ -99,91 +98,13 @@ class TestJudgeDecision:
         assert decision.truncate_to == 2
 
 
-# --- render_for_agent: judge view ---
+# --- Guidance integration ---
 
 
-class TestJudgeView:
-    def test_includes_question(self):
-        state = _make_state_with_steps(1)
-        rendered = render_for_agent(state, "judge")
-        assert "What is the total amount?" in rendered
-
-    def test_includes_data_sources(self):
-        state = _make_state_with_steps(1)
-        rendered = render_for_agent(state, "judge")
-        assert "Data Sources" in rendered
-        assert "payments.csv" in rendered
-
-    def test_includes_key_findings(self):
-        state = _make_state_with_steps(2)
-        rendered = render_for_agent(state, "judge")
-        assert "Key Findings" in rendered
-        assert "Found result 0" in rendered
-        assert "Found result 1" in rendered
-
-    def test_includes_completed_steps(self):
-        state = _make_state_with_steps(2)
-        rendered = render_for_agent(state, "judge")
-        assert "Completed Steps" in rendered
-
-    def test_includes_latest_step_output(self):
-        state = _make_state_with_steps(1)
-        rendered = render_for_agent(state, "judge")
-        assert "Latest Step Output" in rendered
-        assert "result_0: computed value" in rendered
-
-    def test_includes_judge_guidance(self):
-        state = _make_state_with_steps(1)
-        state = update_judge_guidance(state, "Total should be around 50000")
-        rendered = render_for_agent(state, "judge")
-        assert "Prior Guidance" in rendered
-        assert "Total should be around 50000" in rendered
-
-    def test_no_hypothesis_when_empty(self):
-        state = _make_state_with_steps(1)
-        rendered = render_for_agent(state, "judge")
-        assert "Prior Guidance" not in rendered
-
-    def test_includes_error_for_failed_step(self):
-        manifest = _make_manifest()
-        state = create_initial_state("t", "q", manifest, "p")
-        step = StepRecord(
-            plan=PlanStep(step_description="Compute sum"),
-            code="raise ValueError('bad')",
-            result=SandboxResult(
-                stdout="",
-                stderr="ValueError: bad",
-                return_code=1,
-                execution_time_ms=50,
-            ),
-            step_index=0,
-        )
-        state = add_step(state, step, "Error in computation")
-        rendered = render_for_agent(state, "judge")
-        assert "Latest Step Error" in rendered
-        assert "ValueError: bad" in rendered
-
-    def test_differs_from_verifier_view(self):
-        state = _make_state_with_steps(2)
-        judge_view = render_for_agent(state, "judge")
-        verifier_view = render_for_agent(state, "verifier")
-        # Judge gets Data Sources; verifier does not
-        assert "Data Sources" in judge_view
-        assert "Data Sources" not in verifier_view
-
-
-# --- Guidance integration with hypothesis ---
-
-
-class TestGuidanceHypothesisIntegration:
-    def test_guidance_becomes_hypothesis(self):
-        """Judge's guidance_for_next_step should be usable as the next hypothesis."""
+class TestGuidanceIntegration:
+    def test_guidance_stored_in_state(self):
+        """Judge's guidance_for_next_step is stored in state.judge_guidance."""
         state = _make_state_with_steps(1)
         guidance = "Next: filter by card_scheme='GlobalCard' and compute weighted average"
         state = update_judge_guidance(state, guidance)
         assert state.judge_guidance == guidance
-
-        # Planner should see this guidance
-        rendered = render_for_agent(state, "planner")
-        assert "GlobalCard" in rendered
-        assert "Judge Guidance" in rendered
