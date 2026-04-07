@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from dataclasses import dataclass
 from typing import Any
 
 from .types import LLMUsage
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -18,6 +21,7 @@ class LLMConfig:
     base_url: str | None = None
     max_tokens: int = 8192
     temperature: float = 0.0
+    context_window: int = 262_144  # Model's max input token limit
 
 
 class LLMClient:
@@ -48,6 +52,10 @@ class LLMClient:
 
     def chat_with_usage(self, system: str, user: str) -> tuple[str, LLMUsage]:
         """Chat and return (response_text, usage_info)."""
+        # Pre-send guard: truncate system prompt if total tokens exceed context window.
+        # User message is preserved (usually small). System prompt is trimmed from the end.
+        system = self._guard_token_limit(system, user)
+
         start = time.time()
 
         if self._config.provider in ("moonshot", "openai", "deepseek"):
@@ -56,6 +64,62 @@ class LLMClient:
             return self._chat_anthropic(system, user, start)
         else:
             raise ValueError(f"Unknown provider: {self._config.provider}")
+
+    def _guard_token_limit(self, system: str, user: str) -> str:
+        """Truncate system prompt if estimated tokens exceed context window.
+
+        This is a safety net — the ContextManager should prevent this from
+        happening in most cases. But if it does (legacy paths, edge cases),
+        this guard prevents API 400 errors.
+
+        Uses binary search on char position to find the right truncation
+        point, validated by estimate_tokens (tiktoken-based).
+        """
+        from .token_estimator import estimate_tokens
+
+        # Reserve tokens for: output (max_tokens) + user message + overhead
+        user_tokens = estimate_tokens(user)
+        system_tokens = estimate_tokens(system)
+        overhead = 200  # message framing, special tokens
+        total = system_tokens + user_tokens + self._config.max_tokens + overhead
+
+        if total <= self._config.context_window:
+            return system
+
+        # Need to trim system prompt
+        available = self._config.context_window - user_tokens - self._config.max_tokens - overhead
+        if available <= 0:
+            # Even with no system prompt, user message exceeds window.
+            # Truncate system to a minimal stub rather than sending full.
+            logger.error(
+                "User message alone (%d tokens) nearly fills context window (%d). "
+                "Truncating system prompt to minimal stub.",
+                user_tokens, self._config.context_window,
+            )
+            return system[:2000] + "\n\n... [system prompt truncated: user message too large]"
+
+        logger.warning(
+            "Pre-send guard: trimming system prompt from %d to ~%d tokens "
+            "(context_window=%d, output_reserve=%d)",
+            system_tokens, available,
+            self._config.context_window, self._config.max_tokens,
+        )
+
+        # Binary search for the right char position that fits `available` tokens.
+        # Conservative: use 2.5 chars/token as initial estimate (safe for CJK),
+        # then verify with estimate_tokens.
+        lo, hi = 0, len(system)
+        best = min(int(available * 2.5), hi)  # conservative starting point
+
+        for _ in range(8):  # converge in ~8 iterations
+            mid = (lo + hi) // 2
+            if estimate_tokens(system[:mid]) <= available:
+                best = mid
+                lo = mid + 1
+            else:
+                hi = mid - 1
+
+        return system[:best] + "\n\n... [system prompt truncated to fit context window]"
 
     def _chat_openai_compat(self, system: str, user: str, start: float) -> tuple[str, LLMUsage]:
         """OpenAI-compatible API (Moonshot/Kimi, OpenAI, DeepSeek)."""
@@ -176,5 +240,6 @@ def create_client_from_config(config: dict) -> LLMClient:
             base_url=llm_cfg.get("base_url"),
             max_tokens=llm_cfg.get("max_tokens", 8192),
             temperature=llm_cfg.get("temperature", 0.0),
+            context_window=llm_cfg.get("context_window", 262_144),
         )
     )

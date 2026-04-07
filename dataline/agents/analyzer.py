@@ -7,13 +7,28 @@ Returns two separate outputs:
 
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 
 from ..core.llm_client import LLMClient
 from ..core.sandbox import Sandbox
+from ..core.token_estimator import estimate_tokens
 from ..core.types import Manifest
 from ..profiler.manifest import manifest_to_json
+
+logger = logging.getLogger(__name__)
+
+# Compilation threshold: compile when domain rules exceed this fraction
+# of the CM budget. At 30% of 175K budget ≈ 52K tokens (~200K chars),
+# this only fires for truly large docs that would risk token overflow.
+# Tune based on eval results.
+_COMPILE_BUDGET_FRACTION = 0.30
+
+# Chunk size for extremely large docs (in chars).
+# Each chunk must fit within the LLM's context window for compilation.
+# ~80K chars ≈ ~20K tokens, leaving room for prompt + output.
+_CHUNK_MAX_CHARS = 80_000
 
 
 def analyze(manifest: Manifest, llm: LLMClient, sandbox: Sandbox) -> tuple[str, str]:
@@ -42,6 +57,179 @@ def analyze(manifest: Manifest, llm: LLMClient, sandbox: Sandbox) -> tuple[str, 
     return _deterministic_fallback(manifest_json), domain_rules
 
 
+def compile_domain_rules(
+    raw_rules: str,
+    llm: LLMClient,
+    budget_tokens: int,
+) -> str:
+    """Compile domain rules if they exceed a fraction of the token budget.
+
+    Layer 1 compilation: recall-priority, question-agnostic.
+    Extracts ALL rules, formulas, definitions, and constraints into a
+    structured format that preserves exact quotes while reducing token count.
+
+    Args:
+        raw_rules: Full text of domain documentation files.
+        llm: LLM client for compilation.
+        budget_tokens: Total token budget from ContextManager.
+
+    Returns:
+        Compiled rules if compilation was needed and succeeded,
+        otherwise the original raw_rules unchanged.
+    """
+    if not raw_rules or not raw_rules.strip():
+        return raw_rules
+
+    rules_tokens = estimate_tokens(raw_rules)
+    threshold = int(budget_tokens * _COMPILE_BUDGET_FRACTION)
+
+    if rules_tokens <= threshold:
+        logger.debug(
+            "Domain rules fit within budget: %d tokens ≤ %d threshold",
+            rules_tokens, threshold,
+        )
+        return raw_rules
+
+    logger.info(
+        "Domain rules exceed budget fraction: %d tokens > %d threshold. Compiling...",
+        rules_tokens, threshold,
+    )
+
+    # For docs that fit in a single LLM call, compile directly
+    if len(raw_rules) <= _CHUNK_MAX_CHARS:
+        compiled = _compile_single(raw_rules, llm)
+        if compiled:
+            compiled_tokens = estimate_tokens(compiled)
+            logger.info(
+                "Compiled domain rules: %d → %d tokens (%.0f%% reduction)",
+                rules_tokens, compiled_tokens,
+                (1 - compiled_tokens / rules_tokens) * 100,
+            )
+            return compiled
+        logger.warning("Domain rules compilation failed, returning raw text")
+        return raw_rules
+
+    # Chunked compilation for extremely large docs
+    return _compile_chunked(raw_rules, llm, rules_tokens)
+
+
+def _compile_single(raw_rules: str, llm: LLMClient) -> str:
+    """Compile domain rules in a single LLM call."""
+    prompt_path = Path(__file__).parent.parent / "prompts" / "domain_extractor.md"
+    template = prompt_path.read_text(encoding="utf-8")
+    system_prompt = template.replace("{domain_rules_text}", raw_rules)
+
+    try:
+        result = llm.chat(system_prompt, "Extract all structured rules now.")
+        if result and len(result.strip()) > 50:
+            return result.strip()
+    except Exception as exc:
+        logger.warning("Domain rules compilation failed: %s", exc)
+
+    return ""
+
+
+def _compile_chunked(raw_rules: str, llm: LLMClient, total_tokens: int) -> str:
+    """Compile domain rules in chunks for extremely large documents.
+
+    Strategy:
+    1. Split raw text into chunks at paragraph/section boundaries
+    2. Compile each chunk independently
+    3. Merge compiled chunks into a single document
+    """
+    chunks = _split_into_chunks(raw_rules)
+    logger.info("Splitting %d-token domain rules into %d chunks", total_tokens, len(chunks))
+
+    compiled_parts: list[str] = []
+    for i, chunk in enumerate(chunks):
+        compiled = _compile_single(chunk, llm)
+        if compiled:
+            compiled_parts.append(f"<!-- chunk {i + 1}/{len(chunks)} -->\n{compiled}")
+        else:
+            # Fallback: keep raw chunk but truncated
+            truncated = chunk[:_CHUNK_MAX_CHARS // 2]
+            compiled_parts.append(f"<!-- chunk {i + 1}/{len(chunks)} (raw, truncated) -->\n{truncated}")
+            logger.warning("Chunk %d/%d compilation failed, using truncated raw", i + 1, len(chunks))
+
+    result = "\n\n---\n\n".join(compiled_parts)
+    compiled_tokens = estimate_tokens(result)
+
+    # Guard: if compilation didn't actually reduce size, return raw
+    if compiled_tokens >= total_tokens:
+        logger.warning(
+            "Chunked compilation did not reduce size (%d >= %d tokens). "
+            "Returning raw domain rules.",
+            compiled_tokens, total_tokens,
+        )
+        return raw_rules
+
+    logger.info(
+        "Chunked compilation complete: %d → %d tokens (%.0f%% reduction)",
+        total_tokens, compiled_tokens,
+        (1 - compiled_tokens / total_tokens) * 100,
+    )
+    return result
+
+
+def _split_into_chunks(text: str) -> list[str]:
+    """Split text into chunks at section boundaries.
+
+    Prefers splitting at markdown headings or file separators (=== filename ===).
+    Falls back to paragraph boundaries.
+    """
+    # Try splitting at file separators first (=== filename ===)
+    file_sections = re.split(r"(?=^===\s.+\s===$)", text, flags=re.MULTILINE)
+    file_sections = [s for s in file_sections if s.strip()]
+
+    chunks: list[str] = []
+    current_chunk = ""
+
+    for section in file_sections:
+        if len(current_chunk) + len(section) > _CHUNK_MAX_CHARS and current_chunk:
+            chunks.append(current_chunk)
+            current_chunk = section
+        else:
+            current_chunk += ("\n\n" if current_chunk else "") + section
+
+    if current_chunk:
+        chunks.append(current_chunk)
+
+    # If still too few chunks (single giant file), split by headings
+    if len(chunks) == 1 and len(chunks[0]) > _CHUNK_MAX_CHARS:
+        return _split_by_headings(chunks[0])
+
+    return chunks
+
+
+def _split_by_headings(text: str) -> list[str]:
+    """Split a single large document by markdown headings."""
+    parts = re.split(r"(?=^#{1,4}\s)", text, flags=re.MULTILINE)
+    parts = [p for p in parts if p.strip()]
+
+    chunks: list[str] = []
+    current = ""
+
+    for part in parts:
+        if len(current) + len(part) > _CHUNK_MAX_CHARS and current:
+            chunks.append(current)
+            current = part
+        else:
+            current += part
+
+    if current:
+        chunks.append(current)
+
+    # Final fallback: hard split
+    if len(chunks) == 1 and len(chunks[0]) > _CHUNK_MAX_CHARS:
+        text = chunks[0]
+        return [text[i:i + _CHUNK_MAX_CHARS] for i in range(0, len(text), _CHUNK_MAX_CHARS)]
+
+    return chunks
+
+
+# --- Original functions (unchanged) ---
+
+
 def _extract_domain_rules(manifest: Manifest) -> str:
     """Extract full content from documentation files as domain rules.
 
@@ -52,7 +240,6 @@ def _extract_domain_rules(manifest: Manifest) -> str:
     This is deterministic (no LLM cost) and creates an independent channel
     so domain knowledge is never squeezed out by statistical profiles.
     """
-    doc_extensions = {".md", ".txt", ".rst"}
     doc_parts: list[str] = []
 
     for entry in manifest.entries:
@@ -137,22 +324,6 @@ def _deterministic_fallback(manifest_json: str) -> str:
         "in your first step before making assumptions about values):\n\n"
         f"{manifest_json}"
     )
-
-
-def extract_structured_rules(raw_rules: str, llm: LLMClient) -> str:
-    """LLM-powered extraction of structured rules from long domain docs.
-
-    Only called when len(raw_rules) > 50_000. Produces a compact, structured
-    representation that preserves all rules while reducing token footprint.
-    """
-    prompt_path = Path(__file__).parent.parent / "prompts" / "domain_extractor.md"
-    template = prompt_path.read_text(encoding="utf-8")
-
-    # If extremely long, take first 100K chars (safety)
-    rules_text = raw_rules[:100_000] if len(raw_rules) > 100_000 else raw_rules
-    system_prompt = template.replace("{domain_rules_text}", rules_text)
-
-    return llm.chat(system_prompt, "Extract all structured rules now.")
 
 
 def _extract_code(response: str) -> str:

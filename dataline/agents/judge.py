@@ -13,8 +13,10 @@ import json
 import re
 from pathlib import Path
 
+from ..core.context_manager import ContextManager, Section
 from ..core.llm_client import LLMClient
 from ..core.state import render_for_agent
+from ..core.token_estimator import cap_text
 from ..core.types import AnalysisState, JudgeDecision, StepRecord
 
 
@@ -24,27 +26,40 @@ def evaluate(
     llm: LLMClient,
     *,
     state: AnalysisState | None = None,
+    cm: ContextManager | None = None,
 ) -> JudgeDecision:
     """Evaluate progress and decide next action in a single LLM call.
 
-    If state is provided, uses structured context rendering.
+    If state + cm are provided, uses budget-managed context via ContextManager.
+    If only state, uses structured context rendering (legacy).
     Otherwise falls back to legacy steps_done formatting.
     """
     prompt_path = Path(__file__).parent.parent / "prompts" / "judge.md"
     template = prompt_path.read_text(encoding="utf-8")
 
-    if state is not None:
+    if state is not None and cm is not None:
+        sections = _build_sections(state)
+        context = cm.assemble(sections, llm=llm)
+        system_prompt = (
+            template
+            .replace("{question}", state.question)
+            .replace("{analysis_context}", context)
+        )
+
+    elif state is not None:
         context = render_for_agent(state, "judge")
-        effective_question = state.question
+        system_prompt = (
+            template
+            .replace("{question}", state.question)
+            .replace("{analysis_context}", context)
+        )
     else:
         context = _format_steps(steps_done)
-        effective_question = question
-
-    system_prompt = (
-        template
-        .replace("{question}", effective_question)
-        .replace("{analysis_context}", context)
-    )
+        system_prompt = (
+            template
+            .replace("{question}", question)
+            .replace("{analysis_context}", context)
+        )
 
     response = llm.chat(system_prompt, "Evaluate progress and decide the next action now.")
 
@@ -65,6 +80,70 @@ def evaluate(
         guidance_for_next_step=data.get("guidance_for_next_step", ""),
         truncate_to=data.get("truncate_to", 0),
     )
+
+
+def _build_sections(state: AnalysisState) -> list[Section]:
+    """Build prioritized sections for judge context.
+
+    Excludes question (already in template {question}).
+    """
+    sections: list[Section] = []
+
+    sections.append(Section(
+        "manifest", state.manifest_summary,
+        priority=70, heading="## Data Sources",
+    ))
+
+    if state.domain_rules:
+        sections.append(Section(
+            "domain_rules", state.domain_rules,
+            priority=80, heading="## Domain Rules (use to verify code logic)",
+        ))
+
+    if state.key_findings:
+        sections.append(Section(
+            "key_findings",
+            "\n".join(f"- {f}" for f in state.key_findings),
+            priority=75, heading="## Key Findings",
+        ))
+
+    if state.completed_steps:
+        sections.append(Section(
+            "completed_steps",
+            "\n".join(state.completed_steps),
+            priority=60, heading="## Completed Steps",
+        ))
+
+    # Last step with code + output for logic auditing (high priority)
+    if state.full_step_details:
+        last = state.full_step_details[-1]
+        code_text = last.code or "(no code)"
+        sections.append(Section(
+            "latest_code", f"```python\n{code_text}\n```",
+            priority=90, compressible=False,
+            heading="## Latest Step Code",
+        ))
+
+        stdout = cap_text(last.result.stdout) if last.result.stdout else "(no output)"
+        sections.append(Section(
+            "latest_output", stdout,
+            priority=85, heading="## Latest Step Output",
+        ))
+
+        if last.result.return_code != 0 and last.result.stderr:
+            sections.append(Section(
+                "latest_error", last.result.stderr,
+                priority=88, compressible=False,
+                heading="## Latest Step Error",
+            ))
+
+    if state.judge_guidance:
+        sections.append(Section(
+            "prior_guidance", state.judge_guidance,
+            priority=50, heading="## Prior Guidance",
+        ))
+
+    return sections
 
 
 def _format_steps(steps: list[StepRecord]) -> str:

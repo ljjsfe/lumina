@@ -5,6 +5,7 @@ llm:
   api_key_env: MOONSHOT_API_KEY
   max_tokens: 8192
   temperature: 1.0  # kimi-k2.5 only accepts temperature=1
+  context_window: 262144  # Model's max input tokens (used by ContextManager)
 
 agent:
   max_iterations: 8

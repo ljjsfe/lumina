@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from ..core.context_manager import ContextManager, Section
 from ..core.llm_client import LLMClient
 from ..core.state import render_for_agent
 from ..core.types import AnalysisState, PlanStep, StepRecord
@@ -18,17 +19,25 @@ def plan_next(
     llm: LLMClient,
     *,
     state: AnalysisState | None = None,
+    cm: ContextManager | None = None,
 ) -> PlanStep:
     """Plan the next single step based on question and prior results.
 
-    If state is provided, builds context from state (no duplication).
+    If state + cm are provided, builds budget-managed context via ContextManager.
+    If only state, builds context directly (legacy).
     Otherwise falls back to legacy steps_done formatting.
     """
     prompt_path = Path(__file__).parent.parent / "prompts" / "planner.md"
     template = prompt_path.read_text(encoding="utf-8")
 
-    if state is not None:
-        # State path: build full context, inject once via {context}
+    if state is not None and cm is not None:
+        # Budget-managed context via ContextManager
+        sections = _build_sections(state)
+        context = cm.assemble(sections, llm=llm)
+        system_prompt = template.replace("{context}", context)
+
+    elif state is not None:
+        # Legacy state path (no CM)
         context_parts = []
         context_parts.append(f"## Question\n{state.question}")
 
@@ -46,7 +55,6 @@ def plan_next(
         if state.data_profile_summary:
             context_parts.append(f"## Data Profile\n{state.data_profile_summary}")
 
-        # Execution state from render_for_agent (findings + completed steps only)
         exec_context = render_for_agent(state, "planner")
         if exec_context:
             context_parts.append(exec_context)
@@ -82,6 +90,54 @@ def plan_next(
         depends_on_prior=plan_data.get("depends_on_prior", False),
         expected_output=plan_data.get("expected_output", ""),
     )
+
+
+def _build_sections(state: AnalysisState) -> list[Section]:
+    """Build prioritized sections for planner context."""
+    sections: list[Section] = [
+        Section("question", state.question, priority=100,
+                compressible=False, heading="## Question"),
+    ]
+
+    if state.judge_guidance:
+        sections.append(Section(
+            "judge_guidance", f"> **{state.judge_guidance}**",
+            priority=95, compressible=False,
+            heading="## Judge Guidance (MUST ADDRESS in this step)",
+        ))
+
+    sections.append(Section(
+        "manifest", state.manifest_summary,
+        priority=75, heading="## Data Sources",
+    ))
+
+    if state.domain_rules:
+        sections.append(Section(
+            "domain_rules", state.domain_rules,
+            priority=80, heading="## Domain Rules (from documentation)",
+        ))
+
+    if state.data_profile_summary:
+        sections.append(Section(
+            "data_profile", state.data_profile_summary,
+            priority=50, heading="## Data Profile",
+        ))
+
+    if state.key_findings:
+        sections.append(Section(
+            "key_findings",
+            "\n".join(f"- {f}" for f in state.key_findings),
+            priority=70, heading="## Key Findings So Far",
+        ))
+
+    if state.completed_steps:
+        sections.append(Section(
+            "completed_steps",
+            "\n".join(state.completed_steps),
+            priority=60, heading="## Completed Steps",
+        ))
+
+    return sections
 
 
 def _format_steps(steps: list[StepRecord]) -> str:

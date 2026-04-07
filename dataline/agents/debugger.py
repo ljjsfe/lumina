@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from ..core.context_manager import ContextManager, Section
 from ..core.llm_client import LLMClient
 from ..core.state import render_for_agent
 from ..core.types import AnalysisState, SandboxResult
@@ -18,12 +19,14 @@ def fix(
     llm: LLMClient,
     *,
     state: AnalysisState | None = None,
+    cm: ContextManager | None = None,
     retry_number: int = 0,
     previous_attempts: list[tuple[str, str]] | None = None,
 ) -> str:
     """Fix failed code using error info and data context.
 
-    If state is provided, uses structured context for data context.
+    If state + cm are provided, uses budget-managed context via ContextManager.
+    If only state, uses structured context for data context (legacy).
     Otherwise falls back to legacy manifest_json + data_profile.
     """
     prompt_path = Path(__file__).parent.parent / "prompts" / "debugger.md"
@@ -31,7 +34,10 @@ def fix(
 
     error_type, error_message, full_traceback = _parse_error(result.stderr)
 
-    if state is not None:
+    if state is not None and cm is not None:
+        sections = _build_sections(state)
+        data_context = cm.assemble(sections, llm=llm)
+    elif state is not None:
         data_context = render_for_agent(state, "debugger")
     else:
         data_context = f"Manifest:\n{manifest_json[:3000]}\n\nProfile:\n{data_profile[:2000]}"
@@ -59,6 +65,30 @@ def fix(
 
     response = llm.chat(system_prompt, "Fix the code now.")
     return _extract_code(response)
+
+
+def _build_sections(state: AnalysisState) -> list[Section]:
+    """Build prioritized sections for debugger data context."""
+    sections: list[Section] = []
+
+    sections.append(Section(
+        "manifest", state.manifest_summary,
+        priority=70, heading="## Data Sources",
+    ))
+
+    if state.domain_rules:
+        sections.append(Section(
+            "domain_rules", state.domain_rules,
+            priority=75, heading="## Domain Rules",
+        ))
+
+    if state.data_profile_summary:
+        sections.append(Section(
+            "data_profile", state.data_profile_summary,
+            priority=50, heading="## Data Profile",
+        ))
+
+    return sections
 
 
 def _parse_error(stderr: str) -> tuple[str, str, str]:

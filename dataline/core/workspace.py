@@ -29,10 +29,7 @@ import os
 import re
 import shutil
 from pathlib import Path
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from .context_budget import ContextBudget
+from typing import Any
 
 
 class Workspace:
@@ -112,15 +109,11 @@ class Workspace:
         agent_role: str,
         question: str,
         budget_chars: int = 200_000,
-        budget: ContextBudget | None = None,
     ) -> str:
         """Assemble context for an agent, prioritized and budget-aware.
 
-        Instead of stuffing everything into prompt, retrieves relevant
-        sections from workspace files with priority ordering.
-
-        If a ContextBudget is provided, uses its per-section ratios.
-        Otherwise falls back to hardcoded fractions (backward compatible).
+        NOTE: This method is largely superseded by ContextManager for
+        budget-managed prompt assembly. Kept for backward compatibility.
 
         Priority (high to low):
         1. Question (always included)
@@ -132,7 +125,7 @@ class Workspace:
         7. Recent step outputs (last 2 steps for coder, last 1 for judge)
         8. Manifest summary (schema info)
         """
-        total = budget.total_chars if budget else budget_chars
+        total = budget_chars
         sections: list[tuple[str, str]] = []  # (heading, content)
         used = 0
 
@@ -288,7 +281,7 @@ class Workspace:
 
     # --- Context summarization (compact) ---
 
-    def compact(self, llm: object, question: str, budget: ContextBudget | None = None) -> str:
+    def compact(self, llm: object, question: str) -> str:
         """Summarize accumulated step outputs via a separate LLM call.
 
         Inspired by Claude Code's compact mechanism: when context grows too
