@@ -37,7 +37,7 @@ from ..core.types import (
 from ..core.workspace import Workspace
 from ..profiler import manifest as profiler
 from ..profiler.manifest import manifest_to_json
-from . import analyzer, planner, coder, judge, debugger, finalizer, question_analyzer
+from . import analyzer, planner, coder, judge, debugger, finalizer, question_analyzer, decomposer
 from .code_validator import validate_column_references
 
 
@@ -153,21 +153,33 @@ def run_task(
         # 3. Initialize AnalysisState (still used for compatibility)
         state = create_initial_state(task_id, question, manifest, data_profile, domain_rules)
 
-        # 4. QuestionAnalyzer: pre-execution strategic analysis (GSD discuss-phase)
+        # 4a. Decomposer: single-purpose constraint isolation before any strategy
+        with tracer.span("decomposer"):
+            _log(trace, "decomposer", "Decomposing question into sub-questions")
+            decomposition = decomposer.decompose(
+                question, state.manifest_summary, domain_rules_raw, traced_llm,
+            )
+            _log(trace, "decomposer",
+                 f"Decomposed into {len(decomposition.sub_questions)} sub-question(s)")
+
+        # 4b. QuestionAnalyzer: strategic analysis given pre-committed decomposition
         with tracer.span("question_analyzer"):
             _log(trace, "question_analyzer", "Analyzing question strategy")
             analysis_plan = question_analyzer.analyze_question(
                 question, state.manifest_summary, workspace, traced_llm,
+                decomposition=decomposition.raw_text,
             )
             _log(trace, "question_analyzer", f"Analysis plan: {len(analysis_plan)} chars")
 
         obs["question_analyzer"] = {
+            "sub_questions": len(decomposition.sub_questions),
             "plan_length_chars": len(analysis_plan),
             "plan_generated": len(analysis_plan) > 50,
         }
 
-        # Inject analysis plan into state so planner/judge can access it via ContextManager
-        state = set_question_analysis(state, analysis_plan)
+        # Inject decomposition + strategy into state (decomposition first — most compact + critical)
+        combined_analysis = decomposition.raw_text + "\n\n---\n\n" + analysis_plan
+        state = set_question_analysis(state, combined_analysis)
 
         # Keep legacy steps_done for TaskResult output
         steps_done: list[StepRecord] = []

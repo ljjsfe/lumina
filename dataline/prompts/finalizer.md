@@ -27,7 +27,7 @@ Format the final answer from the completed analysis.
     - If the question asks for a summary (e.g., "total count", "average fee"), output a single scalar — do NOT output the underlying records.
     - Never conflate record-level output with aggregate output.
 15. Do NOT output a raw DataFrame or Python repr as the answer. The answer must contain the actual computed values — numbers, strings, or identifiers — not a formatted table printout with alignment spaces and index columns.
-16. PRESERVE COLUMN SEPARATION — CRITICAL: if the source data or intermediate computation produces values in separate columns (e.g., "home_score" and "away_score", "first_name" and "last_name"), keep them as separate columns in the output. Do NOT merge or concatenate values from different columns into a single column with a delimiter. Exception: if the question EXPLICITLY asks for a combined value (e.g., "full name", "score in X-Y format", "concatenate A and B"), then combining is correct.
+16. PRESERVE COLUMN SEPARATION: if the source data produces values in separate columns, keep them as separate columns in the output. Do NOT merge values from distinct source columns into one column. Exception: if the question explicitly asks for a combined or formatted value, combining is correct.
 
 ## Output (JSON only, no other text)
 {"columns": {"column_name_1": [val1, val2, ...], "column_name_2": [val1, val2, ...]}}
