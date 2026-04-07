@@ -14,17 +14,43 @@ You are analyzing a data analysis question BEFORE any code is executed. Your job
 
 ---
 
-## Your Analysis
+## PHASE 1 — DECOMPOSITION (output this block FIRST, before any other analysis)
 
-### 1. Question Decomposition (MANDATORY)
+Before writing any strategy, you MUST output a structured decomposition. This forces explicit constraint isolation and prevents constraint bleeding between sub-questions.
 
-Break the question into EXPLICIT sub-questions:
-- List each sub-question numbered (Q1, Q2, Q3, ...)
-- State the expected answer format for each: single scalar | list of values | table
-- Identify the PRIMARY data source for each sub-question
-- **For each sub-question, list ONLY the constraints that apply to it** — do NOT carry global constraints across sub-questions unless the question explicitly links them. Example: if Q1 asks for "average fee for card payments" and Q2 asks for "total transactions in 2024", Q2's filter is year=2024 only, NOT card-type AND year.
+```
+DECOMPOSITION
+{
+  "sub_questions": [
+    {
+      "id": "Q1",
+      "description": "exact sub-question text",
+      "constraints": ["ONLY the filters/conditions that apply to THIS sub-question — do NOT copy constraints from other sub-questions unless the question explicitly links them"],
+      "data_source": "exact file and column(s)",
+      "output_type": "scalar | list | table"
+    },
+    {
+      "id": "Q2",
+      "description": "...",
+      "constraints": ["Q2's OWN constraints only"],
+      "data_source": "...",
+      "output_type": "..."
+    }
+  ]
+}
+```
 
-**If you cannot identify the exact column or data source for a sub-question, say so explicitly and explain what discovery step is needed first.**
+**Constraint isolation rule**: Each sub-question gets ONLY the constraints the question text applies to IT. Example:
+- Q1: "average fee for card payments" → constraints: ["payment_method = 'card'"]
+- Q2: "total transactions in 2024" → constraints: ["year = 2024"] — NOT ["payment_method = 'card'", "year = 2024"]
+
+If the question is simple (single sub-question), output one entry with id "Q1".
+
+---
+
+## PHASE 2 — STRATEGIC ANALYSIS
+
+After the DECOMPOSITION block, complete all sections below.
 
 ### 2. Domain Rule Application (CRITICAL — prevents wrong direction)
 
@@ -53,13 +79,15 @@ Describe the execution plan (2–5 steps):
 - For each step: what to load, what to filter/join/aggregate, what to print
 - Specify exact filter values based on data profile or domain rules
 - Mark which step produces each sub-answer
+- Apply ONLY the constraints listed for each sub-question in Phase 1
 
 ### 5. Self-Verification Checklist
 
 Before finalizing, verify:
 - [ ] Every column name I reference exists in the data profile or manifest
 - [ ] Every filter value I propose appears in the value distribution of that column
-- [ ] My strategy answers ALL sub-questions identified in section 1
+- [ ] My strategy answers ALL sub-questions identified in Phase 1
+- [ ] Each sub-question uses ONLY its own constraints (no bleed-over from other sub-questions)
 - [ ] If using a ratio/percentage: both numerator and denominator data sources identified
 - [ ] Domain rules section is complete — no relevant rule was missed
 
@@ -85,7 +113,7 @@ ANSWER_SCHEMA
 }
 ```
 
-- `sub_questions`: list of all sub-questions identified (same as section 1)
+- `sub_questions`: list of all sub-questions identified (same as Phase 1)
 - `expected_answer_type`: "scalar" for single value, "list" for multiple values in one column, "table" for multi-column
 - `expected_columns`: your best estimate of output column names (advisory, not mandatory)
 - `domain_rules_applied`: list of domain rules used (empty list if no domain docs)
