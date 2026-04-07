@@ -110,7 +110,7 @@ def _build_sections(state: AnalysisState) -> list[Section]:
     if state.data_profile_summary:
         sections.append(Section(
             "data_profile_summary", state.data_profile_summary,
-            priority=45, compressible=True,
+            priority=58, compressible=True,
             heading="## Data Profile (column stats — use to sanity-check filter values)",
         ))
 
