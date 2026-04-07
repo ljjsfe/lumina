@@ -305,17 +305,28 @@ def run_task(
                 judge_guidance = ""
                 _log(trace, "judge", f"Backtracked to step {truncate_to}")
             else:
-                # Stagnation detection
+                # Stagnation detection — two distinct cases with different responses:
+                # 1. code_failed: strategy is wrong → force pivot
+                # 2. guidance_repeated: judge keeps saying same missing data
+                #    → data likely doesn't exist, accept current best result
                 step_failed = result.return_code != 0
                 guidance_repeated = (
                     prev_guidance
                     and verdict.guidance_for_next_step
                     and prev_guidance.strip()[:80] == verdict.guidance_for_next_step.strip()[:80]
                 )
-                if step_failed or guidance_repeated:
+
+                if guidance_repeated and not step_failed:
+                    # Judge is stuck on the same missing info — data doesn't exist.
+                    # Don't waste iterations forcing strategy changes. Finalize now.
+                    _log(trace, "orchestrator",
+                         "Guidance repeated without code failure — data likely unavailable. "
+                         "Accepting current best result.")
+                    break
+
+                if step_failed:
                     stagnation_count += 1
-                    reason = "code_failed" if step_failed else "guidance_repeated"
-                    _log(trace, "orchestrator", f"Stagnation signal: {reason} (count={stagnation_count})")
+                    _log(trace, "orchestrator", f"Stagnation signal: code_failed (count={stagnation_count})")
                 else:
                     stagnation_count = 0
 
@@ -327,7 +338,7 @@ def run_task(
                         break
                     strategy_changes_used += 1
                     _log(trace, "orchestrator",
-                         f"Stagnation detected ({stagnation_count} signals). "
+                         f"Stagnation detected ({stagnation_count} code failures). "
                          f"Forcing strategy change #{strategy_changes_used}.")
                     judge_guidance = (
                         f"MANDATORY STRATEGY CHANGE: The previous approach has failed "

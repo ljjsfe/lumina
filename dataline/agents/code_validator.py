@@ -12,20 +12,23 @@ import re
 from ..core.types import Manifest, ManifestEntry
 
 
-# Patterns that capture column name references in pandas-style code
+# Patterns that capture column name references in pandas-style code.
+# IMPORTANT: capture group uses [^'"\n]+ (excludes newlines) to prevent
+# multi-line string expressions from being matched and injected as broken
+# comment lines (which would cause SyntaxError in the annotated code).
 _COLUMN_PATTERNS = (
     # df["col"], df['col']
-    re.compile(r"""(?:df|data|table|merged|filtered|result|joined)\[['"]([^'"]+)['"]\]"""),
+    re.compile(r"""(?:df|data|table|merged|filtered|result|joined)\[['"]([^'"\n]+)['"]\]"""),
     # .groupby("col"), .groupby(["col1", "col2"])
-    re.compile(r"""\.groupby\(\[?['"]([^'"]+)['"]\]?\)"""),
+    re.compile(r"""\.groupby\(\[?['"]([^'"\n]+)['"]\]?\)"""),
     # .sort_values("col")
-    re.compile(r"""\.sort_values\(\[?['"]([^'"]+)['"]\]?\)"""),
+    re.compile(r"""\.sort_values\(\[?['"]([^'"\n]+)['"]\]?\)"""),
     # .drop_duplicates("col") or .drop_duplicates(subset=["col"])
-    re.compile(r"""\.drop_duplicates\([^)]*['"]([^'"]+)['"][^)]*\)"""),
+    re.compile(r"""\.drop_duplicates\([^)]*['"]([^'"\n]+)['"][^)]*\)"""),
     # .merge(..., on="col") or on=["col"]
-    re.compile(r"""\bon=['"]([^'"]+)['"]"""),
+    re.compile(r"""\bon=['"]([^'"\n]+)['"]"""),
     # .rename(columns={"old": ...})
-    re.compile(r"""\.rename\(columns=\{['"]([^'"]+)['"]"""),
+    re.compile(r"""\.rename\(columns=\{['"]([^'"\n]+)['"]"""),
 )
 
 

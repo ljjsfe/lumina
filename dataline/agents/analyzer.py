@@ -90,6 +90,14 @@ def compile_domain_rules(
         )
         return raw_rules
 
+    # Skip compilation if the content looks like data (lookup tables, CSV-like rows).
+    # Compiling data tables risks dropping actual values the agents need.
+    if _looks_like_data(raw_rules):
+        logger.info(
+            "Domain rules contain data tables — skipping compilation to preserve values."
+        )
+        return raw_rules
+
     logger.info(
         "Domain rules exceed budget fraction: %d tokens > %d threshold. Compiling...",
         rules_tokens, threshold,
@@ -111,6 +119,31 @@ def compile_domain_rules(
 
     # Chunked compilation for extremely large docs
     return _compile_chunked(raw_rules, llm, rules_tokens)
+
+
+def _looks_like_data(text: str) -> bool:
+    """Heuristic: return True if text contains significant data tables or CSV-like content.
+
+    Triggers when the content has many pipe-delimited rows (markdown tables),
+    dense numeric lines, or a high ratio of numbers to text — signals that
+    the document is a data file, not a pure rule/formula document.
+    """
+    lines = text.splitlines()
+    if not lines:
+        return False
+
+    pipe_lines = sum(1 for ln in lines if ln.count("|") >= 2)
+    numeric_lines = sum(1 for ln in lines if re.search(r"\b\d+\.?\d*\b", ln))
+
+    # >15% pipe-delimited lines → markdown data table
+    if pipe_lines / len(lines) > 0.15:
+        return True
+
+    # >60% lines contain numbers → data-heavy document
+    if numeric_lines / len(lines) > 0.60:
+        return True
+
+    return False
 
 
 def _compile_single(raw_rules: str, llm: LLMClient) -> str:
