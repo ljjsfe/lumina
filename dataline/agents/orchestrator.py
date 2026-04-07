@@ -353,6 +353,9 @@ def run_task(
                         f"data from scratch."
                     )
                     stagnation_count = 0  # clean window for new strategy
+                    # Clear QA plan — if we're stuck, the initial analysis was wrong.
+                    # Free the planner from its bias so judge_guidance takes full control.
+                    state = set_question_analysis(state, "")
 
         # 6. Finalize
         with tracer.span("finalizer"):
