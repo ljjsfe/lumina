@@ -49,6 +49,20 @@ If you detect a logic error, choose "backtrack" or "continue" with specific corr
    Signatures: `0 rows`, `Empty DataFrame`, `No matches`, `After filter: 0`.
 6. **The code used a filter value that doesn't appear in the data profile** — the filter is likely wrong and will silently match nothing
 
+## Sanity Flags — Check BEFORE choosing "finish"
+
+These flags do NOT automatically block "finish", but each must be explicitly resolved in your reasoning:
+
+**Flag 1 — Row count vs. question scope**
+If the question clearly asks for a SINGLE entity ("which X has the highest", "who is the most", "what is the name of the one person/product/event"), but the output contains more than 3 rows — this is suspicious. Check whether the result was correctly aggregated before concluding.
+*Do NOT apply this flag to list questions ("list all X", "find all Y", "which countries") — those legitimately return many rows.*
+
+**Flag 2 — Filter value plausibility**
+If domain rules or the data profile are available, verify that filter values used in the code actually exist in the data. A filter on a value not present in the profile silently returns 0 rows. If 0 rows were returned, this is the most likely cause.
+
+**Flag 3 — Coverage after time-range filter**
+If the code filtered by a date/time range AND printed the data range and filtered row count (per coder rule 12), verify the coverage is reasonable. If the code did NOT print coverage, note it as a gap but do not block "finish" solely for this.
+
 ## Actions
 - **"finish"**: Results are sufficient AND code logic is correct. Use ONLY when you can point to the exact answer in the stdout.
 - **"continue"**: Making progress but need more steps. Provide guidance for the next step.

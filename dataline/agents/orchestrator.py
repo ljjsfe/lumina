@@ -19,6 +19,7 @@ from ..core.sandbox import Sandbox
 from ..core.state import (
     add_step,
     create_initial_state,
+    set_question_analysis,
     summarize_step_output,
     truncate_to_step,
     update_judge_guidance,
@@ -164,6 +165,9 @@ def run_task(
             "plan_length_chars": len(analysis_plan),
             "plan_generated": len(analysis_plan) > 50,
         }
+
+        # Inject analysis plan into state so planner/judge can access it via ContextManager
+        state = set_question_analysis(state, analysis_plan)
 
         # Keep legacy steps_done for TaskResult output
         steps_done: list[StepRecord] = []

@@ -100,6 +100,20 @@ def _build_sections(state: AnalysisState) -> list[Section]:
             priority=80, heading="## Domain Rules (use to verify code logic)",
         ))
 
+    if state.question_analysis:
+        sections.append(Section(
+            "question_analysis", state.question_analysis,
+            priority=55, compressible=True,
+            heading="## Question Analysis (expected strategy — use to audit code logic)",
+        ))
+
+    if state.data_profile_summary:
+        sections.append(Section(
+            "data_profile_summary", state.data_profile_summary,
+            priority=45, compressible=True,
+            heading="## Data Profile (column stats — use to sanity-check filter values)",
+        ))
+
     if state.key_findings:
         sections.append(Section(
             "key_findings",

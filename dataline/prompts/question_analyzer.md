@@ -22,6 +22,7 @@ Break the question into EXPLICIT sub-questions:
 - List each sub-question numbered (Q1, Q2, Q3, ...)
 - State the expected answer format for each: single scalar | list of values | table
 - Identify the PRIMARY data source for each sub-question
+- **For each sub-question, list ONLY the constraints that apply to it** — do NOT carry global constraints across sub-questions unless the question explicitly links them. Example: if Q1 asks for "average fee for card payments" and Q2 asks for "total transactions in 2024", Q2's filter is year=2024 only, NOT card-type AND year.
 
 **If you cannot identify the exact column or data source for a sub-question, say so explicitly and explain what discovery step is needed first.**
 

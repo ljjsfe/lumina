@@ -34,11 +34,29 @@ def create_initial_state(
         manifest_summary=compress_manifest(manifest),
         data_profile_summary=data_profile,
         domain_rules=domain_rules,
+        question_analysis="",
         key_findings=(),
         variables_in_scope=(),
         judge_guidance="",
         completed_steps=(),
         full_step_details=(),
+    )
+
+
+def set_question_analysis(state: AnalysisState, analysis: str) -> AnalysisState:
+    """Return new state with question_analysis set (called once after QuestionAnalyzer)."""
+    return AnalysisState(
+        task_id=state.task_id,
+        question=state.question,
+        manifest_summary=state.manifest_summary,
+        data_profile_summary=state.data_profile_summary,
+        domain_rules=state.domain_rules,
+        question_analysis=analysis,
+        key_findings=state.key_findings,
+        variables_in_scope=state.variables_in_scope,
+        judge_guidance=state.judge_guidance,
+        completed_steps=state.completed_steps,
+        full_step_details=state.full_step_details,
     )
 
 
@@ -119,6 +137,7 @@ def add_step(
         manifest_summary=state.manifest_summary,
         data_profile_summary=state.data_profile_summary,
         domain_rules=state.domain_rules,
+        question_analysis=state.question_analysis,
         key_findings=state.key_findings + (finding_summary,),
         variables_in_scope=new_vars,
         judge_guidance=state.judge_guidance,
@@ -135,6 +154,7 @@ def update_judge_guidance(state: AnalysisState, guidance: str) -> AnalysisState:
         manifest_summary=state.manifest_summary,
         data_profile_summary=state.data_profile_summary,
         domain_rules=state.domain_rules,
+        question_analysis=state.question_analysis,
         key_findings=state.key_findings,
         variables_in_scope=state.variables_in_scope,
         judge_guidance=guidance,
@@ -151,6 +171,7 @@ def truncate_to_step(state: AnalysisState, step_index: int) -> AnalysisState:
         manifest_summary=state.manifest_summary,
         data_profile_summary=state.data_profile_summary,
         domain_rules=state.domain_rules,
+        question_analysis=state.question_analysis,
         key_findings=state.key_findings[:step_index],
         variables_in_scope=state.variables_in_scope,  # keep all — pickles still on disk
         judge_guidance=state.judge_guidance,
@@ -188,6 +209,8 @@ def render_for_agent(state: AnalysisState, agent_role: str) -> str:
                 f"## Judge Guidance (MUST ADDRESS in this step)\n"
                 f"> **{state.judge_guidance}**"
             )
+        if state.question_analysis:
+            sections.append(f"## Question Analysis (pre-execution strategy)\n{state.question_analysis}")
         if state.key_findings:
             sections.append("## Key Findings So Far\n" + "\n".join(f"- {f}" for f in state.key_findings))
         if state.completed_steps:

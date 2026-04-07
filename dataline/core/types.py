@@ -146,6 +146,7 @@ class AnalysisState:
     manifest_summary: str                           # column names + types (compressed schema)
     data_profile_summary: str                       # analyzer output: stats, distributions
     domain_rules: str = ""                          # extracted from manual/README/knowledge files
+    question_analysis: str = ""                     # pre-execution strategic analysis from QuestionAnalyzer
     key_findings: tuple[str, ...] = ()              # 1-line verified findings
     variables_in_scope: tuple[tuple[str, str], ...] = ()  # (pickle_name, description)
     judge_guidance: str = ""                        # steering instruction from judge for next iteration

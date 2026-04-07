@@ -22,6 +22,11 @@ Format the final answer from the completed analysis.
 13. "Not Applicable" rules — distinguish two cases:
     - **Legitimate NA**: You successfully queried the data and confirmed the data genuinely does not contain the information needed (e.g., column exists but all values are null, the entity asked about does not appear in the dataset). "Not Applicable" is the correct answer.
     - **Code failure NA**: The code raised an error, timed out, returned 0 rows due to a wrong filter, or you are unsure. You MUST NOT output "Not Applicable" — instead output your best partial answer from earlier successful steps. Never disguise a code failure as "Not Applicable".
+14. Column granularity — CRITICAL: match the question's requested granularity exactly.
+    - If the question asks for individual entity values (e.g., "list the patient IDs"), output one row per entity — do NOT aggregate or deduplicate unless the question asks for distinct counts.
+    - If the question asks for a summary (e.g., "total count", "average fee"), output a single scalar — do NOT output the underlying records.
+    - Never conflate record-level output with aggregate output.
+15. Do NOT output a raw DataFrame or Python repr as the answer. The answer must contain the actual computed values — numbers, strings, or identifiers — not a formatted table printout with alignment spaces and index columns.
 
 ## Output (JSON only, no other text)
 {"columns": {"column_name_1": [val1, val2, ...], "column_name_2": [val1, val2, ...]}}

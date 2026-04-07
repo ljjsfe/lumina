@@ -176,9 +176,15 @@ def _try_direct_extract(
     Returns a dict {"col": [values]} on success, None if LLM formatting is needed.
 
     Only fires on unambiguous JSON structures — never guesses from free-text output.
+    Rejects stdout that looks like a raw DataFrame printout (aligned columns + index).
     """
     stdout = _last_successful_stdout(steps_done, state)
     if stdout is None:
+        return None
+
+    # Reject raw DataFrame printouts: they look like "  col1  col2\n0  val  val"
+    # The LLM must extract actual values, not copy a formatted table.
+    if _looks_like_dataframe_printout(stdout):
         return None
 
     # Strategy: try parsing as JSON at two granularities (whole stdout, last line).
@@ -196,6 +202,20 @@ def _try_direct_extract(
             return data
 
     return None
+
+
+def _looks_like_dataframe_printout(stdout: str) -> bool:
+    """Heuristic: return True if stdout looks like a pandas DataFrame printout.
+
+    DataFrames have: integer index column on the left, aligned spacing, multiple rows.
+    This guards against the fast path copying a raw table repr instead of extracted values.
+    """
+    lines = [ln for ln in stdout.splitlines() if ln.strip()]
+    if len(lines) < 3:
+        return False
+    # Look for lines starting with integer index (e.g. "0  ", "1  ", "10  ")
+    index_lines = sum(1 for ln in lines if re.match(r"^\s*\d+\s{2,}", ln))
+    return index_lines >= 2
 
 
 def _try_direct_scalar_extract(

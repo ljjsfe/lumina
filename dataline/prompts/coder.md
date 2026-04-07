@@ -160,5 +160,30 @@ If domain rules are provided in context (from manual.md, README, or knowledge fi
 - Field semantics (what null/empty values mean, how to match/filter)
 - Business logic (how records relate, what counts as a match)
 
+### 11. Numeric precision — CRITICAL
+Do NOT round, truncate, or format numbers unless the question EXPLICITLY requests a specific precision.
+Always output the full computed value as-is.
+```python
+# WRONG:
+print(round(result, 2))
+print(f"{result:.2f}")
+
+# RIGHT:
+print(result)
+print(f"Answer: {result}")
+```
+
+### 12. Data coverage check (for time-range and filter queries)
+When filtering by a time range (date, month, year) or any critical dimension, ALWAYS print the actual data range BEFORE and the row count AFTER filtering:
+```python
+# REASON: Verify data coverage matches the question's time range
+print(f"DATA DATE RANGE: {df[date_col].min()} to {df[date_col].max()}")
+filtered = df[(df[date_col] >= start) & (df[date_col] <= end)]
+print(f"AFTER FILTER: {len(filtered)} rows, {filtered[date_col].nunique()} distinct periods")
+# If 0 rows, print: actual unique values in that column to diagnose the mismatch
+if len(filtered) == 0:
+    print(f"WARNING: No rows matched. Sample values: {df[date_col].unique()[:10]}")
+```
+
 ## Output
 Return ONLY the Python code, wrapped in ```python ... ```. No explanation.
