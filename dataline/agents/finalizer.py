@@ -284,6 +284,20 @@ def _build_sections(state: AnalysisState) -> list[Section]:
             heading="## Latest Step Result (primary answer source)",
         ))
 
+        # Inject explicit column structure from stdout so the LLM doesn't merge them.
+        # Column names come directly from the data — no hardcoding, no heuristics.
+        stdout_cols = _extract_stdout_columns(last.result.stdout or "")
+        if stdout_cols:
+            col_list = ", ".join(stdout_cols)
+            sections.append(Section(
+                "stdout_column_structure",
+                f"The latest step output had these columns: {col_list}\n"
+                f"Output MUST preserve all {len(stdout_cols)} columns as separate entries. "
+                f"Do NOT merge or combine any of them.",
+                priority=98, compressible=False,
+                heading="## Required Column Structure (extracted from output — do not merge)",
+            ))
+
     if state.key_findings:
         sections.append(Section(
             "key_findings",
@@ -292,6 +306,53 @@ def _build_sections(state: AnalysisState) -> list[Section]:
         ))
 
     return sections
+
+
+def _extract_stdout_columns(stdout: str) -> list[str]:
+    """Extract column names from the last step's stdout.
+
+    Tries three formats in order:
+    1. JSON dict-of-lists: {"col": [...], ...}
+    2. Pandas DataFrame header: aligned text table with integer index column
+    3. CSV header: comma-separated first line
+
+    Returns empty list if no unambiguous column structure is found.
+    Column names come from the data — no hardcoding or pattern matching.
+    """
+    if not stdout:
+        return []
+
+    # 1. JSON: keys of a column dict
+    for candidate in _json_candidates(stdout):
+        try:
+            data = json.loads(candidate)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(data, dict) and data:
+            if "columns" in data and isinstance(data["columns"], dict):
+                return list(data["columns"].keys())
+            if all(isinstance(v, list) for v in data.values()):
+                return list(data.keys())
+
+    # 2. DataFrame printout: header line precedes a line starting with an integer index
+    lines = [ln for ln in stdout.splitlines() if ln.strip()]
+    for i in range(len(lines) - 1):
+        next_ln = lines[i + 1]
+        if re.match(r'^\s*\d+\s{2,}', next_ln):
+            # lines[i] is the header
+            cols = re.split(r'\s{2,}', lines[i].strip())
+            cols = [c.strip() for c in cols if c.strip()]
+            if len(cols) >= 2:
+                return cols
+
+    # 3. CSV header: first line with 2+ comma-separated tokens
+    first = lines[0] if lines else ""
+    if "," in first and not first.startswith("{"):
+        cols = [c.strip() for c in first.split(",") if c.strip()]
+        if len(cols) >= 2:
+            return cols
+
+    return []
 
 
 def _format_steps(steps: list[StepRecord]) -> str:

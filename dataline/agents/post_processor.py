@@ -1,69 +1,38 @@
 """Deterministic post-processor for finalizer output.
 
-Fixes column-merging errors that survive even explicit prompt rules.
-No LLM — pure pattern matching and structural analysis.
+Conservative structural fix: if the last step's stdout contained a
+JSON dict with more columns than the finalizer returned, re-extract
+from that JSON directly.
 
-Two targeted fixes:
-1. Score columns: "1-1" → home_score=1, away_score=1
-2. Merged name columns: "Sacha Harrison" → first_name=Sacha, last_name=Harrison
-   (only when last-step stdout confirms separate source columns)
+No heuristic column splitting (names, scores, etc.) — that would be
+fragile and task-specific. The general fix for column merging is to
+inject the stdout column structure into the finalizer prompt BEFORE
+the LLM call (see finalizer._build_sections).
 """
 
 from __future__ import annotations
 
+import json
 import re
 
 from ..core.types import AnalysisState
 
 
-_SCORE_PATTERN = re.compile(r'^\d+\s*[-\u2013]\s*\d+$')
-_FIRST_NAME_RE = re.compile(r'\b(first[_\-\s]?name|given[_\-\s]?name|fname)\b', re.IGNORECASE)
-_LAST_NAME_RE = re.compile(r'\b(last[_\-\s]?name|sur[_\-\s]?name|family[_\-\s]?name|lname)\b', re.IGNORECASE)
-
-
 def post_process(answer: dict, state: AnalysisState | None = None) -> dict:
-    """Apply all deterministic post-processing to finalizer output.
+    """Re-extract from stdout JSON if it has more columns than the current answer.
 
-    Safe to call even when state is None (skips stdout-dependent fixes).
+    Only fires when stdout has unambiguous JSON with more keys — never guesses
+    column names or applies pattern-based splits.
     """
-    if not answer:
+    if not answer or state is None:
         return answer
 
-    result = _fix_score_columns(dict(answer))
+    stdout = _get_last_stdout(state)
+    if not stdout:
+        return answer
 
-    if state is not None:
-        stdout = _get_last_stdout(state)
-        if stdout:
-            result = _fix_merged_name_columns(result, stdout)
+    return _try_json_reextract(answer, stdout)
 
-    return result
-
-
-# --- Fix 1: Score columns ---
-
-def _fix_score_columns(answer: dict) -> dict:
-    """Split 'N-N' score values into separate integer columns.
-
-    Only fires when ALL values in a column match the score pattern —
-    never splits partial matches to avoid false positives.
-    """
-    result = {}
-    for col, values in answer.items():
-        if (values and
-                all(isinstance(v, str) and _SCORE_PATTERN.match(str(v).strip()) for v in values)):
-            home_vals, away_vals = [], []
-            for v in values:
-                parts = re.split(r'\s*[-\u2013]\s*', str(v).strip(), maxsplit=1)
-                home_vals.append(int(parts[0]))
-                away_vals.append(int(parts[1]))
-            result["home_score"] = home_vals
-            result["away_score"] = away_vals
-        else:
-            result[col] = values
-    return result
-
-
-# --- Fix 2: Merged name columns ---
 
 def _get_last_stdout(state: AnalysisState) -> str:
     for step in reversed(state.full_step_details):
@@ -72,52 +41,39 @@ def _get_last_stdout(state: AnalysisState) -> str:
     return ""
 
 
-def _fix_merged_name_columns(answer: dict, stdout: str) -> dict:
-    """Re-split merged 'First Last' name columns when stdout had separate columns.
+def _try_json_reextract(answer: dict, stdout: str) -> dict:
+    """Re-extract answer from stdout JSON if it has more columns than current answer.
 
-    Conditions:
-    1. Stdout contains both first_name AND last_name column patterns (strong evidence)
-    2. Answer has a column where every value is exactly 2 capitalized words
-    3. Answer does not already have separate first/last name columns
+    Checks two shapes:
+    - {"col": [values], ...}           — direct column dict
+    - {"columns": {"col": [values]}}   — wrapped column dict
     """
-    has_first = bool(_FIRST_NAME_RE.search(stdout))
-    has_last = bool(_LAST_NAME_RE.search(stdout))
-    if not (has_first and has_last):
-        return answer
+    for candidate in _json_candidates(stdout):
+        try:
+            data = json.loads(candidate)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
 
-    # Skip if answer already has separate name columns
-    cols_lower = {k.lower() for k in answer}
-    already_split = (
-        any(_FIRST_NAME_RE.search(c) for c in cols_lower) and
-        any(_LAST_NAME_RE.search(c) for c in cols_lower)
-    )
-    if already_split:
-        return answer
+        # Wrapped shape
+        if "columns" in data and isinstance(data["columns"], dict):
+            cols = data["columns"]
+            if (len(cols) > len(answer) and
+                    all(isinstance(v, list) for v in cols.values())):
+                return cols
 
-    first_col = _normalize_col_name(_FIRST_NAME_RE.search(stdout).group(0))
-    last_col = _normalize_col_name(_LAST_NAME_RE.search(stdout).group(0))
+        # Direct shape
+        if (len(data) > len(answer) and
+                all(isinstance(v, list) for v in data.values())):
+            return data
 
-    result = {}
-    for col, values in answer.items():
-        if values and all(isinstance(v, str) and _is_two_word_name(v) for v in values):
-            result[first_col] = [v.split()[0] for v in values]
-            result[last_col] = [v.split()[-1] for v in values]
-        else:
-            result[col] = values
-    return result
+    return answer
 
 
-def _is_two_word_name(value: str) -> bool:
-    """Return True if value looks like 'FirstName LastName'."""
-    parts = value.strip().split()
-    return (
-        len(parts) == 2 and
-        parts[0][0].isupper() and
-        parts[1][0].isupper() and
-        all(c.isalpha() or c in "-'" for c in parts[0] + parts[1])
-    )
-
-
-def _normalize_col_name(raw: str) -> str:
-    """Convert matched pattern to a clean column name."""
-    return re.sub(r'[\s\-]+', '_', raw.strip().lower())
+def _json_candidates(stdout: str) -> list[str]:
+    candidates = [stdout]
+    lines = [ln for ln in stdout.split("\n") if ln.strip()]
+    if lines and lines[-1].strip() != stdout:
+        candidates.append(lines[-1].strip())
+    return candidates

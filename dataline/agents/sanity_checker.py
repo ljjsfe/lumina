@@ -115,12 +115,16 @@ def _check_filter_no_effect(stdout: str, state: AnalysisState) -> list[str]:
 
 
 def _extract_loaded_rows(state: AnalysisState) -> int:
-    """Try to extract total-rows-loaded from early steps' stdout."""
+    """Try to extract total-rows-loaded from early steps' stdout.
+
+    Looks for the coder's standard 'Loaded: N rows' pattern (rule 4).
+    Only matches explicit load-time prints — not post-filter counts.
+    """
     for step in state.full_step_details[:3]:
+        # Match "Loaded: N rows" or "Loaded N rows" — coder rule 4 format
         m = re.search(
-            r'(?:loaded|total|all records)[^:]*:\s*(\d+)\s*rows?',
+            r'\bLoaded[:\s]+(\d+)\s+rows?\b',
             step.result.stdout or "",
-            re.IGNORECASE,
         )
         if m:
             return int(m.group(1))
