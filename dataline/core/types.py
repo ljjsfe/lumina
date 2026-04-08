@@ -94,6 +94,7 @@ class JudgeDecision:
     missing: str = ""
     guidance_for_next_step: str = ""  # passed to Planner to steer next iteration
     truncate_to: int = 0
+    quoted_answer: str = ""  # CoT: exact answer quoted from stdout before verdict
 
 
 @dataclass(frozen=True)

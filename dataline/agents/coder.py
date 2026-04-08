@@ -77,6 +77,13 @@ def _build_sections(state: AnalysisState) -> list[Section]:
             priority=80, heading="## Domain Rules (from documentation)",
         ))
 
+    if state.question_analysis:
+        sections.append(Section(
+            "question_analysis", state.question_analysis,
+            priority=75, compressible=True,
+            heading="## Question Analysis (expected approach — follow constraints exactly)",
+        ))
+
     if state.data_profile_summary:
         sections.append(Section(
             "data_profile", state.data_profile_summary,

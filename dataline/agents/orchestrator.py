@@ -161,6 +161,9 @@ def run_task(
             )
             _log(trace, "decomposer",
                  f"Decomposed into {len(decomposition.sub_questions)} sub-question(s)")
+            if decomposition.validation_warnings:
+                for w in decomposition.validation_warnings:
+                    _log(trace, "decomposer", f"WARNING: {w}")
 
         # 4b. QuestionAnalyzer: strategic analysis given pre-committed decomposition
         with tracer.span("question_analyzer"):
@@ -177,8 +180,15 @@ def run_task(
             "plan_generated": len(analysis_plan) > 50,
         }
 
-        # Inject decomposition + strategy into state (decomposition first — most compact + critical)
-        combined_analysis = decomposition.raw_text + "\n\n---\n\n" + analysis_plan
+        # Inject decomposition + strategy into state.
+        # Simple questions (single sub-question) don't need the full strategy plan —
+        # the decomposition JSON alone provides sufficient constraint grounding.
+        is_simple_question = len(decomposition.sub_questions) <= 1
+        if is_simple_question:
+            combined_analysis = decomposition.raw_text
+            _log(trace, "orchestrator", "Simple question: storing decomposition only (no QA plan)")
+        else:
+            combined_analysis = decomposition.raw_text + "\n\n---\n\n" + analysis_plan
         state = set_question_analysis(state, combined_analysis)
 
         # Keep legacy steps_done for TaskResult output
@@ -196,6 +206,13 @@ def run_task(
             tracer.set_iteration(iteration, max_iterations)
             _log(trace, "iteration", f"--- Iteration {iteration} ---")
             iter_obs: dict[str, Any] = {"iteration": iteration}
+
+            # QA fade: at iteration 2, drop the step-by-step strategy (stale after 2 rounds).
+            # Keep only the decomposition JSON — still valid for constraint grounding.
+            if iteration == 2 and state.question_analysis and "\n\n---\n\n" in state.question_analysis:
+                decomp_only = state.question_analysis.split("\n\n---\n\n")[0]
+                state = set_question_analysis(state, decomp_only)
+                _log(trace, "orchestrator", "QA fade: dropped step strategy, keeping decomposition JSON")
 
             # Update judge guidance from prior iteration
             if judge_guidance:
@@ -280,7 +297,11 @@ def run_task(
             # Judge: combined sufficiency check + routing + guidance (single LLM call)
             with tracer.span("judge", metadata={"iteration": iteration}):
                 _log(trace, "judge", "Evaluating progress")
-                verdict = judge.evaluate(question, steps_done, traced_llm, state=state, cm=cm)
+                verdict = judge.evaluate(
+                    question, steps_done, traced_llm,
+                    state=state, cm=cm,
+                    iteration=iteration, max_iterations=max_iterations,
+                )
             _log(trace, "judge", f"sufficient={verdict.sufficient}, action={verdict.action}, missing={verdict.missing}")
 
             iter_obs["judge_sufficient"] = verdict.sufficient

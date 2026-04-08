@@ -27,15 +27,20 @@ def evaluate(
     *,
     state: AnalysisState | None = None,
     cm: ContextManager | None = None,
+    iteration: int = 0,
+    max_iterations: int = 8,
 ) -> JudgeDecision:
     """Evaluate progress and decide next action in a single LLM call.
 
     If state + cm are provided, uses budget-managed context via ContextManager.
-    If only state, uses structured context rendering (legacy).
     Otherwise falls back to legacy steps_done formatting.
     """
     prompt_path = Path(__file__).parent.parent / "prompts" / "judge.md"
     template = prompt_path.read_text(encoding="utf-8")
+
+    # Pre-compute iteration thresholds for the template
+    max_iter_minus_2 = max(0, max_iterations - 2)
+    max_iter_minus_1 = max(0, max_iterations - 1)
 
     if state is not None and cm is not None:
         sections = _build_sections(state)
@@ -44,6 +49,10 @@ def evaluate(
             template
             .replace("{question}", state.question)
             .replace("{analysis_context}", context)
+            .replace("{iteration}", str(iteration))
+            .replace("{max_iterations}", str(max_iterations))
+            .replace("{max_iterations_minus_2}", str(max_iter_minus_2))
+            .replace("{max_iterations_minus_1}", str(max_iter_minus_1))
         )
 
     else:
@@ -52,6 +61,10 @@ def evaluate(
             template
             .replace("{question}", question)
             .replace("{analysis_context}", context)
+            .replace("{iteration}", str(iteration))
+            .replace("{max_iterations}", str(max_iterations))
+            .replace("{max_iterations_minus_2}", str(max_iter_minus_2))
+            .replace("{max_iterations_minus_1}", str(max_iter_minus_1))
         )
 
     response = llm.chat(system_prompt, "Evaluate progress and decide the next action now.")
@@ -72,6 +85,7 @@ def evaluate(
         missing=data.get("missing", ""),
         guidance_for_next_step=data.get("guidance_for_next_step", ""),
         truncate_to=data.get("truncate_to", 0),
+        quoted_answer=data.get("quoted_answer", ""),
     )
 
 

@@ -250,6 +250,13 @@ def _build_sections(state: AnalysisState) -> list[Section]:
             priority=80, heading="## Domain Rules",
         ))
 
+    if state.question_analysis:
+        sections.append(Section(
+            "question_analysis", state.question_analysis,
+            priority=72, compressible=True,
+            heading="## Question Analysis (expected output types — verify column structure)",
+        ))
+
     # Step results: split into earlier steps (compressible) and last step (non-compressible).
     # The last step's output contains the final answer — must not be compressed.
     if state.full_step_details:

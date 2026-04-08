@@ -30,6 +30,7 @@ class SubQuestion:
 class DecomposedQuestion:
     sub_questions: tuple[SubQuestion, ...]
     raw_text: str  # full LLM response, injected into downstream context
+    validation_warnings: tuple[str, ...] = ()  # non-fatal warnings about data source refs
 
 
 def decompose(
@@ -41,6 +42,7 @@ def decompose(
     """Decompose question into sub-questions with isolated constraints.
 
     Intentionally minimal prompt — single-purpose focus improves quality.
+    Validates that referenced data sources match manifest files (non-blocking).
     """
     prompt_path = Path(__file__).parent.parent / "prompts" / "decomposer.md"
     template = prompt_path.read_text(encoding="utf-8")
@@ -54,7 +56,40 @@ def decompose(
 
     response = llm.chat(system_prompt, "Decompose the question now.")
     sub_questions = _parse(response)
-    return DecomposedQuestion(sub_questions=sub_questions, raw_text=response)
+    warnings = _validate_data_sources(sub_questions, manifest_summary)
+    return DecomposedQuestion(
+        sub_questions=sub_questions,
+        raw_text=response,
+        validation_warnings=tuple(warnings),
+    )
+
+
+def _validate_data_sources(
+    sub_questions: tuple[SubQuestion, ...],
+    manifest_summary: str,
+) -> list[str]:
+    """Check that sub-question data_source fields reference files in the manifest.
+
+    Non-blocking: returns warning strings only. Does not raise.
+    """
+    if not sub_questions:
+        return []
+    known_files = set(re.findall(
+        r'\b[\w\-]+\.(?:csv|sqlite|db|json|parquet|xlsx?|md|pdf|docx)\b',
+        manifest_summary,
+        re.IGNORECASE,
+    ))
+    if not known_files:
+        return []
+    warnings = []
+    for sq in sub_questions:
+        ds_lower = sq.data_source.lower()
+        if not any(fn.lower() in ds_lower for fn in known_files):
+            warnings.append(
+                f"{sq.id}: data_source '{sq.data_source}' does not match "
+                f"any manifest file: {sorted(known_files)}"
+            )
+    return warnings
 
 
 def _parse(response: str) -> tuple[SubQuestion, ...]:
