@@ -159,32 +159,36 @@ def _last_successful_stdout(
 
 
 def _try_structured_extract(state: AnalysisState | None) -> dict | None:
-    """Path 1: read answer from the last step's save_result() structured output.
+    """Path 1: read answer from the LAST step's save_result() structured output.
 
+    Only checks the last step — never falls back to earlier steps, since an
+    earlier step's answer is likely exploratory/partial and would be wrong.
     Returns a non-empty column dict, or None if not available.
-    This path requires NO text parsing — column names and values come directly
-    from the code that computed them.
     """
     if state is None or not state.full_step_details:
         return None
 
-    # Walk backwards to find the last step that wrote a structured result
-    for step in reversed(state.full_step_details):
-        if not step.result.structured_json:
-            continue
-        try:
-            data = json.loads(step.result.structured_json)
-        except (json.JSONDecodeError, ValueError):
-            continue
-        answer = data.get("answer", {})
-        if not isinstance(answer, dict) or not answer:
-            continue
-        # Validate: all values must be lists of the same length
-        if all(isinstance(v, list) for v in answer.values()):
-            lengths = {len(v) for v in answer.values()}
-            if len(lengths) == 1:
-                return answer
-    return None
+    last = state.full_step_details[-1]
+    if not last.result.structured_json:
+        return None
+
+    try:
+        data = json.loads(last.result.structured_json)
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+    answer = data.get("answer", {})
+    if not isinstance(answer, dict) or not answer:
+        return None
+
+    # Validate: all values are lists of the same length
+    if not all(isinstance(v, list) for v in answer.values()):
+        return None
+    lengths = {len(v) for v in answer.values()}
+    if len(lengths) != 1:
+        return None
+
+    return answer
 
 
 def _try_direct_extract(
