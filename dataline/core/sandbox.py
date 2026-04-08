@@ -39,6 +39,12 @@ class Sandbox:
             step_id = f"step_{self._step_count}"
         self._step_count += 1
 
+        # Clear previous step_result.json so a failed step never inherits the
+        # previous step's structured output.
+        result_path = Path(self._temp_dir) / "step_result.json"
+        if result_path.exists():
+            result_path.unlink()
+
         # Write code to temp file
         code_path = Path(self._temp_dir) / f"{step_id}.py"
         code_path.write_text(code, encoding="utf-8")
@@ -66,6 +72,7 @@ class Sandbox:
                 return_code=proc.returncode,
                 execution_time_ms=elapsed_ms,
                 step_id=step_id,
+                structured_json=self._read_step_result(),
             )
         except subprocess.TimeoutExpired:
             elapsed_ms = int((time.time() - start) * 1000)
@@ -92,6 +99,16 @@ class Sandbox:
         if helpers_src.exists():
             helpers_dst = Path(self._temp_dir) / "data_helpers.py"
             shutil.copy2(str(helpers_src), str(helpers_dst))
+
+    def _read_step_result(self) -> str:
+        """Read step_result.json written by save_result() helper. Returns JSON string or ''."""
+        path = Path(self._temp_dir) / "step_result.json"
+        if not path.exists():
+            return ""
+        try:
+            return path.read_text(encoding="utf-8")
+        except OSError:
+            return ""
 
     def save_step_result(self, step_id: str, data: object) -> str:
         """Save step result as pickle for later steps to use."""

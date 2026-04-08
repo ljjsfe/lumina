@@ -359,6 +359,80 @@ def load_intermediate(name: str, temp_dir: str | None = None) -> Any:
         return pickle.load(f)
 
 
+# --- Structured result output ---
+
+
+def save_result(
+    answer: "dict | list | float | int | str",
+    debug: "dict | None" = None,
+    row_counts: "dict | None" = None,
+    temp_dir: "str | None" = None,
+) -> str:
+    """Write structured step result to step_result.json in TEMP_DIR.
+
+    Call this at the END of every step. It is the canonical output channel —
+    Finalizer reads `answer`, Judge/sanity-checker reads `debug` and `row_counts`.
+    stdout is still useful as a human-readable log, but is no longer parsed.
+
+    Args:
+        answer: The computed result.
+                Table → {"col1": [v1, v2, ...], "col2": [v1, v2, ...]}
+                Scalar → {"answer": [value]}
+                Exploratory step with no final answer → {}
+        debug:  Intermediate values for Judge verification.
+                E.g., {"numerator": 5, "denominator": 8, "ratio": 0.625}
+        row_counts: Filter statistics for sanity checks.
+                E.g., {"rows_loaded": 1000, "after_filter": 6}
+
+    Returns:
+        Absolute path to the written file.
+    """
+    td = temp_dir or os.environ.get("TEMP_DIR", ".")
+    path = os.path.join(td, "step_result.json")
+
+    payload: dict = {
+        "answer": _to_json_serializable(answer),
+    }
+    if debug:
+        payload["debug"] = {str(k): _to_json_serializable(v) for k, v in debug.items()}
+    if row_counts:
+        payload["row_counts"] = {str(k): _to_json_serializable(v) for k, v in row_counts.items()}
+
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    answer_keys = list(payload["answer"].keys()) if isinstance(payload["answer"], dict) else type(payload["answer"]).__name__
+    print(f"[step_result] saved — answer keys: {answer_keys}")
+    return path
+
+
+def _to_json_serializable(val: "Any") -> "Any":
+    """Recursively convert numpy/pandas types to JSON-serializable Python types."""
+    import math as _math
+    if val is None:
+        return None
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return None if (isinstance(val, float) and _math.isnan(val)) else val
+    if isinstance(val, str):
+        return val
+    if isinstance(val, (list, tuple)):
+        return [_to_json_serializable(v) for v in val]
+    if isinstance(val, dict):
+        return {str(k): _to_json_serializable(v) for k, v in val.items()}
+    # pandas DataFrame → dict of lists
+    if hasattr(val, "to_dict") and hasattr(val, "columns"):
+        return {str(k): _to_json_serializable(v) for k, v in val.to_dict(orient="list").items()}
+    # numpy array / pandas Series → list
+    if hasattr(val, "tolist"):
+        return _to_json_serializable(val.tolist())
+    # numpy scalar
+    if hasattr(val, "item"):
+        return _to_json_serializable(val.item())
+    return str(val)
+
+
 # --- Private helpers ---
 
 

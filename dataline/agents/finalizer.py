@@ -43,19 +43,24 @@ def _format_kdd(
     state: AnalysisState | None = None,
     cm: ContextManager | None = None,
 ) -> dict:
-    """KDD table-format answer (original logic).
+    """KDD table-format answer.
 
-    Fast path: if the last successful step's stdout already contains a clean
-    structured answer (JSON dict/list, or a simple printed table), extract it
-    directly without an LLM call.  This avoids the LLM rewriting numbers
-    (precision loss) and reduces cost.
+    Path 1 (structured): last step wrote save_result() → read answer directly.
+                         No LLM, no text parsing, exact column names preserved.
+    Path 2 (stdout JSON): last step printed a JSON dict → extract directly.
+    Path 3 (LLM):         fall back to LLM formatting with column-structure hint.
     """
-    # --- Fast path: try direct extraction from stdout ---
+    # --- Path 1: structured output from save_result() ---
+    structured = _try_structured_extract(state)
+    if structured is not None:
+        return structured
+
+    # --- Path 2: JSON in stdout ---
     direct = _try_direct_extract(steps_done, state)
     if direct is not None:
         return post_processor.post_process(direct, state)
 
-    # --- Slow path: LLM formatting ---
+    # --- Path 3: LLM formatting ---
     prompt_path = Path(__file__).parent.parent / "prompts" / "finalizer.md"
     template = prompt_path.read_text(encoding="utf-8")
 
@@ -150,6 +155,35 @@ def _last_successful_stdout(
     for step in reversed(details):
         if step.result.return_code == 0 and step.result.stdout.strip():
             return step.result.stdout.strip()
+    return None
+
+
+def _try_structured_extract(state: AnalysisState | None) -> dict | None:
+    """Path 1: read answer from the last step's save_result() structured output.
+
+    Returns a non-empty column dict, or None if not available.
+    This path requires NO text parsing — column names and values come directly
+    from the code that computed them.
+    """
+    if state is None or not state.full_step_details:
+        return None
+
+    # Walk backwards to find the last step that wrote a structured result
+    for step in reversed(state.full_step_details):
+        if not step.result.structured_json:
+            continue
+        try:
+            data = json.loads(step.result.structured_json)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        answer = data.get("answer", {})
+        if not isinstance(answer, dict) or not answer:
+            continue
+        # Validate: all values must be lists of the same length
+        if all(isinstance(v, list) for v in answer.values()):
+            lengths = {len(v) for v in answer.values()}
+            if len(lengths) == 1:
+                return answer
     return None
 
 
@@ -284,18 +318,20 @@ def _build_sections(state: AnalysisState) -> list[Section]:
             heading="## Latest Step Result (primary answer source)",
         ))
 
-        # Inject explicit column structure from stdout so the LLM doesn't merge them.
-        # Column names come directly from the data — no hardcoding, no heuristics.
-        stdout_cols = _extract_stdout_columns(last.result.stdout or "")
+        # Inject explicit column structure so the LLM doesn't merge columns.
+        # Prefer structured output (save_result); fall back to stdout parsing.
+        struct_cols = _structured_column_names(last.result.structured_json)
+        stdout_cols = struct_cols or _extract_stdout_columns(last.result.stdout or "")
         if stdout_cols:
             col_list = ", ".join(stdout_cols)
+            source = "save_result()" if struct_cols else "stdout"
             sections.append(Section(
-                "stdout_column_structure",
-                f"The latest step output had these columns: {col_list}\n"
+                "required_column_structure",
+                f"The latest step produced these columns ({source}): {col_list}\n"
                 f"Output MUST preserve all {len(stdout_cols)} columns as separate entries. "
                 f"Do NOT merge or combine any of them.",
                 priority=98, compressible=False,
-                heading="## Required Column Structure (extracted from output — do not merge)",
+                heading="## Required Column Structure (do not merge)",
             ))
 
     if state.key_findings:
@@ -306,6 +342,24 @@ def _build_sections(state: AnalysisState) -> list[Section]:
         ))
 
     return sections
+
+
+def _structured_column_names(structured_json: str) -> list[str]:
+    """Extract column names from save_result() structured output.
+
+    Returns column keys from the answer dict, or empty list if not available.
+    These names are authoritative — they came directly from the code.
+    """
+    if not structured_json:
+        return []
+    try:
+        data = json.loads(structured_json)
+        answer = data.get("answer", {})
+        if isinstance(answer, dict) and answer:
+            return list(answer.keys())
+    except (json.JSONDecodeError, ValueError):
+        pass
+    return []
 
 
 def _extract_stdout_columns(stdout: str) -> list[str]:

@@ -12,14 +12,16 @@ Three checks:
 
 from __future__ import annotations
 
+import json
 import re
 
 from ..core.types import AnalysisState
 
 
 def compute_flags(state: AnalysisState) -> list[str]:
-    """Run all deterministic checks on the latest step's stdout.
+    """Run all deterministic checks on the latest step's output.
 
+    Reads from structured_json (save_result) first; falls back to stdout regex.
     Returns a list of evidence strings (empty if no issues found).
     """
     if not state.full_step_details:
@@ -29,27 +31,50 @@ def compute_flags(state: AnalysisState) -> list[str]:
     stdout = last.result.stdout or ""
     question = state.question
 
+    # Parse structured output for reliable row_counts and debug values
+    structured = _parse_structured(last.result.structured_json)
+
     flags: list[str] = []
-    flags.extend(_check_zero_rows(stdout))
-    flags.extend(_check_magnitude(stdout, question))
-    flags.extend(_check_filter_no_effect(stdout, state))
+    flags.extend(_check_zero_rows(stdout, structured))
+    flags.extend(_check_magnitude(stdout, question, structured))
+    flags.extend(_check_filter_no_effect(stdout, state, structured))
     return flags
 
 
-def _check_zero_rows(stdout: str) -> list[str]:
-    """Flag when a filter explicitly returns 0 rows."""
+def _parse_structured(structured_json: str) -> dict:
+    """Parse structured_json from save_result(). Returns empty dict on failure."""
+    if not structured_json:
+        return {}
+    try:
+        return json.loads(structured_json)
+    except (json.JSONDecodeError, ValueError):
+        return {}
+
+
+def _check_zero_rows(stdout: str, structured: dict) -> list[str]:
+    """Flag when a filter returns 0 rows.
+
+    Prefers structured row_counts from save_result(); falls back to stdout regex.
+    """
+    # Structured path: check row_counts dict
+    row_counts = structured.get("row_counts", {})
+    for key, val in row_counts.items():
+        if "filter" in key.lower() and val == 0:
+            return [
+                f"ZERO_ROWS: {key}=0 — "
+                "check filter value, column name, and comparison direction"
+            ]
+
+    # Fallback: stdout regex
     patterns = [
         r'after filter[^:]*:\s*0\b',
-        r'after filter[^:]*:\s*0\s+rows?',
         r'filtered[^:]*:\s*0\s+rows?',
-        r'result[^:]*:\s*0\s+rows?',
         r'0 rows? (?:returned|found|matched)',
         r'empty dataframe',
         r'no matches found',
     ]
-    stdout_lower = stdout.lower()
     for p in patterns:
-        if re.search(p, stdout_lower):
+        if re.search(p, stdout.lower()):
             return [
                 "ZERO_ROWS: filter returned 0 rows — "
                 "check filter value, column name, and comparison direction"
@@ -57,54 +82,78 @@ def _check_zero_rows(stdout: str) -> list[str]:
     return []
 
 
-def _check_magnitude(stdout: str, question: str) -> list[str]:
-    """Flag suspicious magnitudes for ratio/average questions."""
+def _check_magnitude(stdout: str, question: str, structured: dict) -> list[str]:
+    """Flag suspicious magnitudes for ratio/average questions.
+
+    Uses structured debug values when available for reliable number extraction.
+    """
     flags = []
     q_lower = question.lower()
 
-    # Ratio/rate check: result > 100 is likely a unit error
+    # Get the ratio/result value: structured debug takes priority over stdout regex
+    debug = structured.get("debug", {})
+
     is_ratio = any(
         w in q_lower
         for w in ["ratio", " rate", "proportion", "percentage", "percent", " %", "share of"]
     )
     if is_ratio:
-        numbers = re.findall(r'\b(\d+(?:\.\d+)?)\b', stdout)
-        last_positive = next((float(n) for n in reversed(numbers) if float(n) > 0), None)
-        if last_positive is not None and last_positive > 100:
+        ratio_val = None
+        # Try structured debug first
+        for key in ("ratio", "rate", "proportion", "result", "value"):
+            if key in debug and isinstance(debug[key], (int, float)):
+                ratio_val = float(debug[key])
+                break
+        # Fall back to last number in stdout
+        if ratio_val is None:
+            numbers = re.findall(r'\b(\d+(?:\.\d+)?)\b', stdout)
+            ratio_val = next((float(n) for n in reversed(numbers) if float(n) > 0), None)
+        if ratio_val is not None and ratio_val > 100:
             flags.append(
                 f"MAGNITUDE_WARNING: question asks for ratio/rate/percentage "
-                f"but last printed value is {last_positive} (> 100) — "
-                "possible unit error (multiply by 100?) or sum instead of ratio"
+                f"but result is {ratio_val} (> 100) — "
+                "possible unit error or sum instead of ratio"
             )
 
-    # Average/mean check: result >= 1,000,000 is likely a sum
     is_average = any(w in q_lower for w in ["average", "mean", " avg"])
     if is_average:
-        large = re.findall(r'\b(\d{7,}(?:\.\d+)?)\b', stdout)
-        if large:
+        avg_val = debug.get("average") or debug.get("mean") or debug.get("result")
+        if avg_val is None:
+            large = re.findall(r'\b(\d{7,}(?:\.\d+)?)\b', stdout)
+            avg_val = float(large[0]) if large else None
+        if avg_val is not None and float(avg_val) >= 1_000_000:
             flags.append(
                 f"MAGNITUDE_WARNING: question asks for average/mean "
-                f"but result {large[0]} looks very large — "
-                "may be a sum() instead of mean()"
+                f"but result {avg_val} looks very large — "
+                "may be sum() instead of mean()"
             )
 
     return flags
 
 
-def _check_filter_no_effect(stdout: str, state: AnalysisState) -> list[str]:
+def _check_filter_no_effect(stdout: str, state: AnalysisState, structured: dict) -> list[str]:
     """Flag if filter row count equals total loaded rows (filter didn't apply).
 
-    Requires an earlier step to have printed 'Loaded: N rows'.
+    Prefers structured row_counts; falls back to stdout patterns.
     """
-    # Extract "after filter: N rows" from current stdout
+    row_counts = structured.get("row_counts", {})
+
+    # Structured path
+    loaded = row_counts.get("rows_loaded")
+    for key, val in row_counts.items():
+        if "filter" in key.lower() and loaded and val == loaded and val > 0:
+            return [
+                f"FILTER_NO_EFFECT: {key}={val} equals rows_loaded={loaded} — "
+                "filter condition may not have applied"
+            ]
+
+    # Fallback: stdout regex + prior steps
     m_after = re.search(r'after filter[^:]*:\s*(\d+)\s*rows?', stdout, re.IGNORECASE)
     if not m_after:
         return []
     after_count = int(m_after.group(1))
     if after_count == 0:
         return []  # handled by _check_zero_rows
-
-    # Extract total rows from any prior step stdout
     loaded_count = _extract_loaded_rows(state)
     if loaded_count > 0 and after_count == loaded_count:
         return [

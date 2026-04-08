@@ -44,6 +44,7 @@ class SandboxResult:
     return_code: int
     execution_time_ms: int
     step_id: str = ""
+    structured_json: str = ""  # JSON-serialized step_result.json written by save_result()
 
 
 # --- Agent types ---
