@@ -80,8 +80,8 @@ def _build_sections(state: AnalysisState) -> list[Section]:
     if state.question_analysis:
         sections.append(Section(
             "question_analysis", state.question_analysis,
-            priority=75, compressible=True,
-            heading="## Question Analysis (expected approach — follow constraints exactly)",
+            priority=55, compressible=True,
+            heading="## Question Analysis (expected approach — adapt if data differs from expectations)",
         ))
 
     if state.data_profile_summary:

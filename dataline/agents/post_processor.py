@@ -2,18 +2,12 @@
 
 Conservative structural fix: if the last step's stdout contained a
 JSON dict with more columns than the finalizer returned, re-extract
-from that JSON directly.
-
-No heuristic column splitting (names, scores, etc.) — that would be
-fragile and task-specific. The general fix for column merging is to
-inject the stdout column structure into the finalizer prompt BEFORE
-the LLM call (see finalizer._build_sections).
+from that JSON directly. No heuristic column splitting.
 """
 
 from __future__ import annotations
 
 import json
-import re
 
 from ..core.types import AnalysisState
 
