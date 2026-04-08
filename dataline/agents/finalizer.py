@@ -11,6 +11,7 @@ from ..core.llm_client import LLMClient
 
 from ..core.token_estimator import cap_text
 from ..core.types import AnalysisState, StepRecord
+from . import post_processor
 
 
 def format_answer(
@@ -52,7 +53,7 @@ def _format_kdd(
     # --- Fast path: try direct extraction from stdout ---
     direct = _try_direct_extract(steps_done, state)
     if direct is not None:
-        return direct
+        return post_processor.post_process(direct, state)
 
     # --- Slow path: LLM formatting ---
     prompt_path = Path(__file__).parent.parent / "prompts" / "finalizer.md"
@@ -79,8 +80,8 @@ def _format_kdd(
     try:
         data = json.loads(_extract_json(response))
         if "columns" in data:
-            return data["columns"]
-        return data
+            return post_processor.post_process(data["columns"], state)
+        return post_processor.post_process(data, state)
     except (json.JSONDecodeError, ValueError):
         return _fallback_extract(steps_done, state)
 

@@ -173,6 +173,26 @@ print(result)
 print(f"Answer: {result}")
 ```
 
+### 13. Computation transparency for ratio / average / percentage
+
+For ANY calculation involving ratio, rate, proportion, percentage, average, or mean — ALWAYS print the intermediate components. This is mandatory so the Judge can verify direction and scale.
+
+```python
+# Ratio/rate: show numerator, denominator, and result separately
+numerator = len(df[df["condition"] == value])
+denominator = len(df)
+ratio = numerator / denominator
+print(f"Numerator: {numerator}, Denominator: {denominator}, Ratio: {ratio}")
+
+# Average/mean: show sum and count
+total = df["amount"].sum()
+count = len(df)
+average = total / count
+print(f"Sum: {total}, Count: {count}, Average: {average}")
+```
+
+NEVER output only the final number for these calculations. If the Judge sees only "0.625" it cannot tell whether it's 5/8 or 5,000/8,000 or if numerator and denominator were swapped.
+
 ### 12. Data coverage check (for time-range and filter queries)
 When filtering by a time range (date, month, year) or any critical dimension, ALWAYS print the actual data range BEFORE and the row count AFTER filtering:
 ```python

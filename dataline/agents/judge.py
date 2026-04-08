@@ -18,6 +18,7 @@ from ..core.llm_client import LLMClient
 
 from ..core.token_estimator import cap_text
 from ..core.types import AnalysisState, JudgeDecision, StepRecord
+from . import sanity_checker
 
 
 def evaluate(
@@ -44,6 +45,17 @@ def evaluate(
 
     if state is not None and cm is not None:
         sections = _build_sections(state)
+
+        # Inject deterministic sanity flags as high-priority evidence before LLM call
+        flags = sanity_checker.compute_flags(state)
+        if flags:
+            flags_text = "\n".join(f"- {f}" for f in flags)
+            sections.append(Section(
+                "sanity_flags", flags_text,
+                priority=92, compressible=False,
+                heading="## Pre-check Flags (deterministic — address in your reasoning)",
+            ))
+
         context = cm.assemble(sections, llm=llm)
         system_prompt = (
             template
