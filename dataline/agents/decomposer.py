@@ -57,6 +57,7 @@ def decompose(
 
     response = llm.chat(system_prompt, "Decompose the question now.")
     sub_questions = _parse(response)
+    sub_questions = _fill_missing_candidate_columns(sub_questions)
     warnings = _validate_data_sources(sub_questions, manifest_summary)
     return DecomposedQuestion(
         sub_questions=sub_questions,
@@ -91,6 +92,30 @@ def _validate_data_sources(
                 f"any manifest file: {sorted(known_files)}"
             )
     return warnings
+
+
+def _fill_missing_candidate_columns(
+    sub_questions: tuple[SubQuestion, ...],
+) -> tuple[SubQuestion, ...]:
+    """Fill candidate_columns when the LLM omitted them.
+
+    For scalar output_type, defaults to ("answer",).
+    For table/list, leaves empty — the coder will use its own judgment.
+    Does NOT override non-empty candidate_columns from the LLM.
+    """
+    results = []
+    for sq in sub_questions:
+        if not sq.candidate_columns and sq.output_type == "scalar":
+            sq = SubQuestion(
+                id=sq.id,
+                description=sq.description,
+                constraints=sq.constraints,
+                data_source=sq.data_source,
+                output_type=sq.output_type,
+                candidate_columns=("answer",),
+            )
+        results.append(sq)
+    return tuple(results)
 
 
 def _parse(response: str) -> tuple[SubQuestion, ...]:

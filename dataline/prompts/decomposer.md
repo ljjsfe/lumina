@@ -14,7 +14,7 @@ Break this data analysis question into sub-questions with strictly isolated cons
 2. If a constraint references a coded value (e.g., "severe"), translate it to the exact code using the domain rules.
 3. Column names must appear in the data sources above — never invent names.
 4. If the question has one goal, output a single entry with id "Q1".
-5. `candidate_columns`: list the exact column names from the manifest that should appear as keys in the final output. Use the original column names as they appear in the data — do NOT merge or rename them (e.g., keep `first_name` and `last_name` separate, do NOT write `full_name`). If the output is a scalar, write `["answer"]`.
+5. `candidate_columns`: list the exact column names from the manifest that should appear as keys in the final output. Use the original column names as they appear in the data — do NOT merge or rename them (e.g., keep `first_name` and `last_name` separate, do NOT write `full_name`). If `output_type` is `"scalar"`, the final output is a single value — write `["answer"]`. Do NOT include source columns used in the calculation.
 
 ## Output (JSON only, no other text)
 ```json

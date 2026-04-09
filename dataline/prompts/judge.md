@@ -61,9 +61,12 @@ If domain rules are present:
 - **"continue"**: Making progress but more work needed. Provide specific guidance for the next step.
 - **"backtrack"**: A prior step used wrong logic (inverted filter, wrong column, wrong join). Set `truncate_to` to the step index to keep before (0 = restart from scratch).
 
-### Backtrack on empty computation results (ZERO_ROWS flag)
+### Empty computation results (ZERO_ROWS flag)
 
-If the Pre-check Evidence includes a `ZERO_ROWS` flag **and** the step that produced it was a computation step (not exploratory schema inspection), set `action` to `"backtrack"`. Use the `truncate_to=N` value from the flag if provided; otherwise use `truncate_to=0`. Do not continue iterating on a step that computed an empty result — the prior logic is wrong and needs to be re-planned from a clean state.
+If the Pre-check Evidence includes a `ZERO_ROWS` flag on a **computation** step (not schema inspection or exploratory printing), use the question's semantic type to decide:
+
+- **Retrieval / listing** ("who", "which", "list of X that meet Y"): zero rows means the filter logic is wrong — something always exists. Choose `"backtrack"`. Use the `truncate_to=N` hint from the flag if provided.
+- **Existence / count / aggregate** ("are there any", "how many", "what is the total/average"): zero or none may be the correct answer. Choose `"finish"` if the value is directly answerable, or `"continue"` with a step to verify the result before finalizing.
 
 ## Output (JSON only, no other text)
 ```json
