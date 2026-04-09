@@ -12,7 +12,7 @@ You are a Python code generator for data analysis. Convert the plan step into ex
 ## Rules
 1. The task data is at the path in environment variable TASK_DIR.
 2. Intermediate results from prior steps are in TEMP_DIR (env var). Load them if needed.
-3. Print human-readable progress to stdout (row counts, column names, intermediate values). For computation steps, also call `save_result()` — see rule 13.
+3. Print human-readable progress to stdout (row counts, column names, intermediate values). **For computation steps (not exploratory), call `save_result()` as the LAST line — see the REQUIRED section below. This is mandatory, not optional.**
 4. Available libraries: pandas, numpy, sqlite3, json, re, os, pickle, collections, itertools, math.
 5. Do NOT guess column names or values — use the data profile above or discover them from the data.
 6. Handle encoding issues (try utf-8 first, then latin-1).
@@ -64,6 +64,41 @@ print(f"After join: {len(merged)} rows (expected ~{len(severe)})")
 ```
 
 ## CRITICAL: Defensive coding patterns
+
+### REQUIRED: save_result() — call for EVERY computation step
+
+When your step computes a final or intermediate result (not just loads/inspects data),
+call `save_result()` as the LAST line. Finalizer reads `answer`; Judge reads `debug`
+and `row_counts` for sanity checks.
+
+```python
+from data_helpers import save_result
+
+# --- Computation step: ratio/rate/percentage ---
+numerator = len(df[df["condition"] == value])
+denominator = len(df)
+ratio = numerator / denominator
+print(f"Numerator: {numerator}, Denominator: {denominator}, Ratio: {ratio}")
+save_result(
+    answer={"ratio": [ratio]},
+    debug={"numerator": numerator, "denominator": denominator},
+    row_counts={"rows_loaded": len(df), "after_filter": numerator},
+)
+
+# --- Table result step ---
+result = df.groupby("category")["value"].mean().reset_index()
+save_result(
+    answer={"category": list(result["category"]), "mean_value": list(result["value"])},
+    row_counts={"rows_loaded": len(df), "result_rows": len(result)},
+)
+```
+
+`answer` rules:
+- Table → `{"col1": [list], "col2": [list]}` — one key per output column, all lists same length
+- Single scalar → `{"answer": [value]}`
+- Skip `save_result()` entirely for pure exploratory steps (loading schema, printing dtypes).
+
+**Column naming rule**: If Question Analysis includes `candidate_columns`, use those exact names as keys in the `answer` dict. Do NOT merge or rename columns (e.g., keep `first_name` and `last_name` as separate keys — do NOT combine as `full_name`).
 
 ### 1. Always verify column names before using them
 ```python
@@ -172,39 +207,6 @@ print(f"{result:.2f}")
 print(result)
 print(f"Answer: {result}")
 ```
-
-### 13. Structured output — required when step computes a result
-
-When your step computes a final or intermediate result (not just loads/inspects data),
-call `save_result()` as the LAST line. Finalizer reads `answer`; Judge reads `debug`
-and `row_counts` for sanity checks.
-
-```python
-from data_helpers import save_result
-
-# --- Computation step: ratio/rate/percentage ---
-numerator = len(df[df["condition"] == value])
-denominator = len(df)
-ratio = numerator / denominator
-print(f"Numerator: {numerator}, Denominator: {denominator}, Ratio: {ratio}")
-save_result(
-    answer={"ratio": [ratio]},
-    debug={"numerator": numerator, "denominator": denominator},
-    row_counts={"rows_loaded": len(df), "after_filter": numerator},
-)
-
-# --- Table result step ---
-result = df.groupby("category")["value"].mean().reset_index()
-save_result(
-    answer={"category": list(result["category"]), "mean_value": list(result["value"])},
-    row_counts={"rows_loaded": len(df), "result_rows": len(result)},
-)
-```
-
-`answer` rules:
-- Table → `{"col1": [list], "col2": [list]}` — one key per output column, all lists same length
-- Single scalar → `{"answer": [value]}`
-- Skip `save_result()` entirely for pure exploratory steps (loading schema, printing dtypes).
 
 ### 12. Data coverage check (for time-range and filter queries)
 When filtering by a time range (date, month, year) or any critical dimension, ALWAYS print the actual data range BEFORE and the row count AFTER filtering:

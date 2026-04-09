@@ -24,6 +24,7 @@ class SubQuestion:
     constraints: tuple[str, ...]
     data_source: str
     output_type: str  # scalar | list | table
+    candidate_columns: tuple[str, ...] = ()  # column names from manifest for output schema
 
 
 @dataclass(frozen=True)
@@ -110,5 +111,6 @@ def _parse(response: str) -> tuple[SubQuestion, ...]:
             constraints=tuple(sq.get("constraints", [])),
             data_source=sq.get("data_source", ""),
             output_type=sq.get("output_type", "scalar"),
+            candidate_columns=tuple(sq.get("candidate_columns", [])),
         ))
     return tuple(results)

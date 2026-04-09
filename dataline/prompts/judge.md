@@ -61,6 +61,10 @@ If domain rules are present:
 - **"continue"**: Making progress but more work needed. Provide specific guidance for the next step.
 - **"backtrack"**: A prior step used wrong logic (inverted filter, wrong column, wrong join). Set `truncate_to` to the step index to keep before (0 = restart from scratch).
 
+### Backtrack on empty computation results (ZERO_ROWS flag)
+
+If the Pre-check Evidence includes a `ZERO_ROWS` flag **and** the step that produced it was a computation step (not exploratory schema inspection), set `action` to `"backtrack"`. Use the `truncate_to=N` value from the flag if provided; otherwise use `truncate_to=0`. Do not continue iterating on a step that computed an empty result — the prior logic is wrong and needs to be re-planned from a clean state.
+
 ## Output (JSON only, no other text)
 ```json
 {
