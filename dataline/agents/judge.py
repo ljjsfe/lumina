@@ -53,7 +53,7 @@ def evaluate(
             sections.append(Section(
                 "sanity_flags", flags_text,
                 priority=72, compressible=False,
-                heading="## Pre-check Flags (deterministic — weigh against actual results)",
+                heading="## Pre-check Evidence (informational — weigh against actual results)",
             ))
 
         context = cm.assemble(sections, llm=llm)
@@ -123,7 +123,7 @@ def _build_sections(state: AnalysisState) -> list[Section]:
         sections.append(Section(
             "question_analysis", state.question_analysis,
             priority=45, compressible=True,
-            heading="## Question Analysis (expected strategy — actual results take precedence)",
+            heading="## Question Analysis (pre-execution estimate — actual results take precedence)",
         ))
 
     if state.data_profile_summary:

@@ -2,7 +2,12 @@
 
 Conservative structural fix: if the last step's stdout contained a
 JSON dict with more columns than the finalizer returned, re-extract
-from that JSON directly. No heuristic column splitting.
+from that JSON directly.
+
+No heuristic column splitting (names, scores, etc.) — those are
+task-specific and overfit to particular benchmarks. The general fix
+for column merging is the save_result() structured path (bypasses
+LLM entirely) or JSON re-extraction from stdout.
 """
 
 from __future__ import annotations

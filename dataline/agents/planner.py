@@ -96,7 +96,7 @@ def _build_sections(state: AnalysisState) -> list[Section]:
         sections.append(Section(
             "question_analysis", state.question_analysis,
             priority=50, compressible=True,
-            heading="## Question Analysis (pre-execution strategy — adapt based on actual data)",
+            heading="## Question Analysis (suggested approach — adapt based on actual data)",
         ))
 
     if state.data_profile_summary:
