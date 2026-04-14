@@ -115,7 +115,7 @@ class LLMUsage:
 class TaskScore:
     """Eval result for a single task."""
     task_id: str
-    score: int  # 0 or 1 for KDD
+    score: float  # 0.0–1.0: Recall − λ·(extra/predicted)
     difficulty: str = ""
     failure_category: str = ""  # code_error | wrong_direction | format_error | ...
     failed_at_agent: str = ""   # which agent failed

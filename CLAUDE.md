@@ -131,7 +131,7 @@ main.py            # CLI entry point
 | KDD Cup 2026 | 50 demo + Phase 2 | Multi-format, cross-source joins |
 | DABstep | 10 dev + full test | Financial payments, scalar answers |
 
-Scoring: column-vector matching. Extra columns in output have no penalty (KDD rule).
+Scoring: `Score = Recall − λ × (Extra Columns / Predicted Columns)`. Extra columns ARE penalized. Column names ignored; values matched by content (sorted), case-sensitive, ROUND_HALF_UP 2dp.
 
 ---
 

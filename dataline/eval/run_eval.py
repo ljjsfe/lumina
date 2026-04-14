@@ -122,11 +122,11 @@ def run_eval(
             steps_executed=steps,
         )
 
-        if task_score_val == 0:
+        if task_score_val < 1.0:
             category = categorize_failure(ts, trace)
             failed_agent = identify_failed_agent(trace)
             ts = TaskScore(
-                task_id=task_id, score=0, difficulty=difficulty,
+                task_id=task_id, score=task_score_val, difficulty=difficulty,
                 failure_category=category,
                 failed_at_agent=failed_agent,
                 tokens_used=tokens,
@@ -139,17 +139,16 @@ def run_eval(
 
         scores.append(ts)
 
-    # Aggregate
+    # Aggregate — mean score across all tasks (float, 0.0–1.0)
     total = len(scores)
-    correct = sum(1 for s in scores if s.score == 1)
-    overall = correct / total if total > 0 else 0.0
+    overall = sum(s.score for s in scores) / total if total > 0 else 0.0
 
     # Per-difficulty
     per_diff: dict[str, float] = {}
     for diff in ["easy", "medium", "hard", "extreme"]:
         diff_tasks = [s for s in scores if s.difficulty == diff]
         if diff_tasks:
-            per_diff[diff] = sum(1 for s in diff_tasks if s.score == 1) / len(diff_tasks)
+            per_diff[diff] = sum(s.score for s in diff_tasks) / len(diff_tasks)
 
     # Generate suggestions
     suggestions = _generate_suggestions(failure_counts, agent_failures, scores)

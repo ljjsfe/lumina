@@ -15,11 +15,11 @@ def compare_runs(run_a: EvalReport, run_b: EvalReport) -> CompareReport:
     improved = []
     regressed = []
     for task_id in sorted(all_tasks):
-        a = scores_a.get(task_id, 0)
-        b = scores_b.get(task_id, 0)
-        if a == 0 and b == 1:
+        a = scores_a.get(task_id, 0.0)
+        b = scores_b.get(task_id, 0.0)
+        if b > a + 0.001:
             improved.append(task_id)
-        elif a == 1 and b == 0:
+        elif a > b + 0.001:
             regressed.append(task_id)
 
     per_diff_delta = {}
