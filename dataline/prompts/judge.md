@@ -63,7 +63,7 @@ If domain rules are present:
 
 ### Empty computation results (ZERO_ROWS flag)
 
-If the Pre-check Evidence includes a `ZERO_ROWS` flag on a **computation** step (not schema inspection or exploratory printing), use the question's semantic type to decide:
+If the Pre-check Flags include a `ZERO_ROWS` flag on a **computation** step (not schema inspection or exploratory printing), use the question's semantic type to decide:
 
 - **Retrieval / listing** ("who", "which", "list of X that meet Y"): zero rows means the filter logic is wrong — something always exists. Choose `"backtrack"`. Use the `truncate_to=N` hint from the flag if provided.
 - **Existence / count / aggregate** ("are there any", "how many", "what is the total/average"): zero or none may be the correct answer. Choose `"finish"` if the value is directly answerable, or `"continue"` with a step to verify the result before finalizing.

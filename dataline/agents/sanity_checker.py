@@ -254,9 +254,13 @@ def _check_count_is_integer(stdout: str, question: str, structured: dict) -> lis
     q_lower = question.lower()
     is_count_question = any(
         phrase in q_lower
-        for phrase in ["how many", "count of", "number of", "how much"]
+        for phrase in ["how many", "count of", "number of"]
     )
+    # "how much" excluded — often monetary/ratio, decimal is normal
+    # "how many times" excluded — may ask for a ratio/multiplier
     if not is_count_question:
+        return []
+    if "how many times" in q_lower:
         return []
 
     # Check structured answer first
