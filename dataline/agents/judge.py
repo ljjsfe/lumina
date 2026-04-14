@@ -52,8 +52,8 @@ def evaluate(
             flags_text = "\n".join(f"- {f}" for f in flags)
             sections.append(Section(
                 "sanity_flags", flags_text,
-                priority=72, compressible=False,
-                heading="## Pre-check Evidence (informational — weigh against actual results)",
+                priority=92, compressible=False,
+                heading="## Pre-check Flags (deterministic — address in your reasoning)",
             ))
 
         context = cm.assemble(sections, llm=llm)
@@ -122,8 +122,8 @@ def _build_sections(state: AnalysisState) -> list[Section]:
     if state.question_analysis:
         sections.append(Section(
             "question_analysis", state.question_analysis,
-            priority=45, compressible=True,
-            heading="## Question Analysis (pre-execution estimate — actual results take precedence)",
+            priority=55, compressible=True,
+            heading="## Question Analysis (expected strategy — use to audit code logic)",
         ))
 
     if state.data_profile_summary:
