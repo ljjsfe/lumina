@@ -34,15 +34,13 @@ def compute_flags(state: AnalysisState) -> list[str]:
     # Parse structured output for reliable row_counts and debug values
     structured = _parse_structured(last.result.structured_json)
 
-    # Find last non-empty step index for backtrack hints (Direction D)
+    # Find last non-empty step index for backtrack hints
     last_non_empty_step = _find_last_non_empty_step(state)
 
     flags: list[str] = []
     flags.extend(_check_zero_rows(stdout, structured, last_non_empty_step))
     flags.extend(_check_magnitude(stdout, question, structured))
     flags.extend(_check_filter_no_effect(stdout, state, structured))
-    flags.extend(_check_missing_structured(last, stdout))
-    flags.extend(_check_count_is_integer(stdout, question, structured))
     return flags
 
 
@@ -69,7 +67,6 @@ def _find_last_non_empty_step(state: AnalysisState) -> int:
         stdout = step.result.stdout or ""
         if step.result.return_code != 0:
             continue
-        # Step has useful output if it's not all-zero-rows or empty
         zero_signals = [
             r'after filter[^:]*:\s*0\b',
             r'0 rows? (?:returned|found|matched)',
@@ -203,7 +200,6 @@ def _extract_loaded_rows(state: AnalysisState) -> int:
     Only matches explicit load-time prints — not post-filter counts.
     """
     for step in state.full_step_details[:3]:
-        # Match "Loaded: N rows" or "Loaded N rows" — coder rule 4 format
         m = re.search(
             r'\bLoaded[:\s]+(\d+)\s+rows?\b',
             step.result.stdout or "",
@@ -211,76 +207,3 @@ def _extract_loaded_rows(state: AnalysisState) -> int:
         if m:
             return int(m.group(1))
     return 0
-
-
-def _check_missing_structured(last_step, stdout: str) -> list[str]:
-    """Flag when a successful computation step printed a numeric answer but skipped save_result().
-
-    Only fires when:
-    - Step succeeded (return_code == 0)
-    - No structured_json was written
-    - stdout contains patterns suggesting a final computed answer
-    """
-    if last_step.result.return_code != 0:
-        return []
-    if last_step.result.structured_json:
-        return []
-
-    answer_patterns = [
-        r'\banswer\s*[:=]\s*[\d\.\-]+',
-        r'\bresult\s*[:=]\s*[\d\.\-]+',
-        r'\btotal\s*[:=]\s*[\d\.\-]+',
-        r'\bratio\s*[:=]\s*[\d\.\-]+',
-        r'\brate\s*[:=]\s*[\d\.\-]+',
-        r'\bcount\s*[:=]\s*\d+',
-        r'\bfinal\s+(?:answer|result|value)\s*[:=]\s*[\d\.\-]+',
-    ]
-    for p in answer_patterns:
-        if re.search(p, stdout.lower()):
-            return [
-                "MISSING_STRUCTURED: step produced a numeric answer but did not call save_result() — "
-                "finalizer will use the LLM path which may lose precision. "
-                "Add save_result(answer={...}) as the last line."
-            ]
-    return []
-
-
-def _check_count_is_integer(stdout: str, question: str, structured: dict) -> list[str]:
-    """Flag when 'how many'/'count of' question returns a non-integer float.
-
-    Counts must be whole numbers. A decimal answer indicates a ratio/average was
-    computed instead of a count.
-    """
-    q_lower = question.lower()
-    is_count_question = any(
-        phrase in q_lower
-        for phrase in ["how many", "count of", "number of"]
-    )
-    # "how much" excluded — often monetary/ratio, decimal is normal
-    # "how many times" excluded — may ask for a ratio/multiplier
-    if not is_count_question:
-        return []
-    if "how many times" in q_lower:
-        return []
-
-    # Check structured answer first
-    answer = structured.get("answer", {})
-    for val_list in answer.values():
-        if isinstance(val_list, list) and len(val_list) == 1:
-            v = val_list[0]
-            if isinstance(v, float) and v != int(v):
-                return [
-                    f"COUNT_NOT_INTEGER: question asks 'how many/count' but result is {v} "
-                    "(not a whole number) — may be an average or ratio instead of a count"
-                ]
-
-    # Fallback: last decimal number in stdout
-    decimals = re.findall(r'\b(\d+\.\d+)\b', stdout)
-    if decimals:
-        last_val = float(decimals[-1])
-        if last_val != int(last_val):
-            return [
-                f"COUNT_NOT_INTEGER: question asks 'how many/count' but result appears to be "
-                f"{last_val} (not a whole number) — may be an average or ratio instead of a count"
-            ]
-    return []

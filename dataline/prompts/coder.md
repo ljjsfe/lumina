@@ -208,7 +208,20 @@ print(result)
 print(f"Answer: {result}")
 ```
 
-### 12. Data coverage check (for time-range and filter queries)
+### 12. Integer results — cast explicitly
+If the result is semantically a count or cardinality (number of items, rows, distinct values),
+cast to `int` before saving or printing. Never leave a count as a float.
+```python
+# WRONG: count ends up as 5.0
+count = df["id"].nunique()
+save_result(answer={"count": [count]})
+
+# RIGHT:
+count = int(df["id"].nunique())
+save_result(answer={"count": [count]})
+```
+
+### 13. Data coverage check (for time-range and filter queries)
 When filtering by a time range (date, month, year) or any critical dimension, ALWAYS print the actual data range BEFORE and the row count AFTER filtering:
 ```python
 # REASON: Verify data coverage matches the question's time range
