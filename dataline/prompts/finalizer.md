@@ -29,6 +29,7 @@ Format the final answer from the completed analysis.
 15. Do NOT output a raw DataFrame or Python repr as the answer. The answer must contain the actual computed values — numbers, strings, or identifiers — not a formatted table printout with alignment spaces and index columns.
 16. PRESERVE COLUMN SEPARATION: if the source data produces values in separate columns, keep them as separate columns in the output. Do NOT merge values from distinct source columns into one column. Exception: if the question explicitly asks for a combined or formatted value, combining is correct.
 17. OUTPUT TYPE GUIDANCE: if the Question Analysis above specifies `output_type` for each sub-question (scalar / list / table), use it to verify your structure. A scalar sub-question must produce a single value column. A list sub-question must produce one row per entity. A table sub-question must preserve all requested dimensions as separate columns.
+18. COLUMN SCOPE — CRITICAL: if "Required Column Structure" is listed above, output ONLY those columns. Do NOT add extra explanation columns, intermediate computation columns, metadata columns, or index columns. Every extra column that has no matching gold column reduces your score.
 
 ## Output (JSON only, no other text)
 {"columns": {"column_name_1": [val1, val2, ...], "column_name_2": [val1, val2, ...]}}

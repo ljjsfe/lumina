@@ -328,11 +328,12 @@ def _build_sections(state: AnalysisState) -> list[Section]:
             sections.append(Section(
                 "required_column_structure",
                 f"The latest step produced these columns ({source}): {col_list}\n"
-                f"Output MUST preserve all {len(stdout_cols)} columns as separate entries. "
-                f"Do NOT merge or combine any of them.\n"
-                f"**Column naming rule**: use these exact column names as output headers.",
+                f"Output MUST contain EXACTLY these {len(stdout_cols)} columns — no more, no fewer. "
+                f"Do NOT add extra columns, explanation columns, index columns, or metadata columns. "
+                f"Do NOT merge or rename any of them.\n"
+                f"**Every extra column beyond this list reduces your score.**",
                 priority=98, compressible=False,
-                heading="## Required Column Structure (do not merge)",
+                heading="## Required Column Structure (EXACTLY these columns, no extras)",
             ))
 
     if state.key_findings:
