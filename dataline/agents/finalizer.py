@@ -341,9 +341,16 @@ def _build_sections(state: AnalysisState) -> list[Section]:
         if stdout_cols:
             col_list = ", ".join(stdout_cols)
             source = "save_result()" if struct_cols else "stdout"
+            # Reference the actual step so the LLM knows where to look,
+            # especially when answer_step differs from the last step.
+            step_ref = (
+                f"Step {answer_step.step_index}"
+                if answer_step.step_index != last.step_index
+                else "the latest step"
+            )
             sections.append(Section(
                 "required_column_structure",
-                f"The latest step produced these columns ({source}): {col_list}\n"
+                f"Columns from {step_ref} ({source}): {col_list}\n"
                 f"Output MUST contain EXACTLY these {len(stdout_cols)} columns — no more, no fewer. "
                 f"Do NOT add extra columns, explanation columns, index columns, or metadata columns. "
                 f"Do NOT merge or rename any of them.\n"
