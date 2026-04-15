@@ -158,6 +158,20 @@ def _last_successful_stdout(
     return None
 
 
+def _last_successful_step(state: AnalysisState) -> "StepRecord":
+    """Return the last StepRecord with rc==0 and non-trivial stdout.
+
+    Falls back to the last step if none qualify (e.g. all steps failed).
+    Used for column-structure detection — the last *successful* step holds the
+    answer data, which may differ from the chronologically last step (which
+    could be a verification/count step with minimal output).
+    """
+    for step in reversed(state.full_step_details):
+        if step.result.return_code == 0 and step.result.stdout and step.result.stdout.strip():
+            return step
+    return state.full_step_details[-1]
+
+
 def _try_structured_extract(state: AnalysisState | None) -> dict | None:
     """Path 1: read answer from the last step's save_result() structured output.
 
@@ -318,10 +332,12 @@ def _build_sections(state: AnalysisState) -> list[Section]:
             heading="## Latest Step Result (primary answer source)",
         ))
 
-        # Inject explicit column structure so the LLM doesn't merge columns.
-        # Prefer structured output (save_result); fall back to stdout parsing.
-        struct_cols = _structured_column_names(last.result.structured_json)
-        stdout_cols = struct_cols or _extract_stdout_columns(last.result.stdout or "")
+        # Column hint: prefer save_result, then walk backwards to the last step
+        # with successful output (rc==0, non-empty stdout).  Using [-1] directly
+        # is wrong when the last step is a verification/count step with trivial output.
+        answer_step = _last_successful_step(state)
+        struct_cols = _structured_column_names(answer_step.result.structured_json)
+        stdout_cols = struct_cols or _extract_stdout_columns(answer_step.result.stdout or "")
         if stdout_cols:
             col_list = ", ".join(stdout_cols)
             source = "save_result()" if struct_cols else "stdout"
@@ -391,7 +407,8 @@ def _extract_stdout_columns(stdout: str) -> list[str]:
             if all(isinstance(v, list) for v in data.values()):
                 return list(data.keys())
 
-    # 2. DataFrame printout: header line precedes a line starting with an integer index
+    # 2. DataFrame printout: header line precedes a line starting with an integer index.
+    # The integer-index pattern is a strong guard, so allow single-column results too.
     lines = [ln for ln in stdout.splitlines() if ln.strip()]
     for i in range(len(lines) - 1):
         next_ln = lines[i + 1]
@@ -399,7 +416,7 @@ def _extract_stdout_columns(stdout: str) -> list[str]:
             # lines[i] is the header
             cols = re.split(r'\s{2,}', lines[i].strip())
             cols = [c.strip() for c in cols if c.strip()]
-            if len(cols) >= 2:
+            if len(cols) >= 1:
                 return cols
 
     # 3. CSV header: first line with 2+ comma-separated tokens

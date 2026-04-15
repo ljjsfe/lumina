@@ -15,7 +15,7 @@ Format the final answer from the completed analysis.
 6. Remove extra whitespace from string values.
 7. If the question asks for a single value, still format as: {"columns": {"answer": [value]}}
 8. Use the LAST successful step's output as the primary data source. Earlier steps may have been exploratory.
-9. CRITICAL: Preserve the EXACT precision of computed numbers. Copy the number exactly as it appears in the step output. Do NOT round, truncate, or reformat numbers. Example: if output says "0.31555732286030097", your answer must be "0.31555732286030097", NOT "0.32" or "0.316".
+9. Copy numbers exactly as they appear in the step output — do not add extra rounding or truncate digits. The scorer normalizes all numeric values to 2 decimal places automatically, so precise copying is sufficient; you do not need to round manually.
 10. If a step produced a WARNING about 0 rows or empty results, do NOT use that step's output — look for earlier valid results.
 11. If the question asks multiple sub-questions (e.g., "What is X and Y?", "Find A, B, and C"), your output MUST have a separate column or value for EACH sub-question. Never merge multiple answers into a single column.
 12. All lists in the output MUST have the same length. A table with mismatched column lengths is invalid.
