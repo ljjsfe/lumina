@@ -83,7 +83,7 @@ def run_task(
     start_time = time.time()
     trace: list[dict] = []
     max_iterations = config.get("agent", {}).get("max_iterations", 8)
-    min_iterations = config.get("agent", {}).get("min_iterations", 2)
+    min_iterations = config.get("agent", {}).get("min_iterations", 1)
     max_retries = config.get("agent", {}).get("max_retries", 2)
     backtrack_limit = config.get("agent", {}).get("backtrack_limit", 3)
     stagnation_threshold = config.get("agent", {}).get("stagnation_threshold", 2)
@@ -394,7 +394,7 @@ def run_task(
 
         obs["skeptic"] = skeptic_result
 
-        # If skeptic flags concern, run one more iteration with guidance
+        # If skeptic flags concern, run one correction iteration (full loop: PlannerCoder → Sandbox → Judge)
         if skeptic_result.get("likely_wrong") and steps_done:
             concern = skeptic_result.get("concern", "")
             _log(trace, "orchestrator",
@@ -405,28 +405,46 @@ def run_task(
                 "Re-examine your approach and fix the issue.",
             )
 
+            # One full iteration with Judge validation
             with tracer.span("planner_coder", metadata={"iteration": "skeptic_retry"}):
                 pc_output = planner_coder_generate(
                     question, manifest_json, data_profile, steps_done,
                     traced_llm, state=state, cm=cm,
                 )
 
-            # Execute correction
+            correction_result = None
             for candidate_code in pc_output.candidates:
-                correction_result = sandbox.execute(
+                candidate_result = sandbox.execute(
                     candidate_code, step_id="skeptic_correction",
                 )
-                if correction_result.return_code == 0:
+                if candidate_result.return_code == 0:
+                    correction_result = candidate_result
                     step_record = StepRecord(
                         plan=pc_output.plan,
                         code=candidate_code,
-                        result=correction_result,
+                        result=candidate_result,
                         step_index=len(steps_done),
                     )
                     steps_done.append(step_record)
-                    finding = summarize_step_output(correction_result.stdout)
+                    finding = summarize_step_output(candidate_result.stdout)
                     state = add_step(state, step_record, finding)
                     break
+
+            # Judge validates the correction (don't blindly trust it)
+            if correction_result and correction_result.return_code == 0:
+                with tracer.span("judge", metadata={"iteration": "skeptic_verify"}):
+                    verify_verdict = judge.evaluate(
+                        question, steps_done, traced_llm,
+                        state=state, cm=cm,
+                        iteration=len(steps_done) - 1, max_iterations=max_iterations,
+                    )
+                _log(trace, "judge",
+                     f"Skeptic correction verdict: action={verify_verdict.action}")
+                # If Judge rejects the correction, discard it (keep original answer)
+                if verify_verdict.action == "backtrack":
+                    steps_done.pop()
+                    _log(trace, "orchestrator",
+                         "Judge rejected skeptic correction — keeping original answer.")
 
         # ─── Stage 6: Finalizer ───
         with tracer.span("finalizer"):

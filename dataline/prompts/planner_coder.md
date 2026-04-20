@@ -108,16 +108,14 @@ SELECT COUNT(*) FROM (
 
 ## Multi-Candidate Output
 
-Provide 2-3 alternative implementations when the approach is uncertain:
-- **Candidate 1**: Your best approach (most likely correct)
-- **Candidate 2**: Alternative strategy (different JOIN, aggregation, or tool)
-- **Candidate 3** (optional): Conservative fallback
+When the question could be answered by more than one approach, list 2-3 candidates.
+When there is one clear best approach, ONE candidate is sufficient.
 
-Candidates are tried in order — first successful execution wins.
-DO NOT generate candidates that are trivially similar (same logic, different formatting).
-Each candidate should represent a genuinely different approach.
+- **Candidate 1**: Your best approach
+- **Candidate 2** (optional): Alternative — e.g., SQL if Candidate 1 is Python, or a different JOIN strategy, or a different aggregation path
+- **Candidate 3** (optional): Fallback using a simpler method
 
-If the approach is clear and unambiguous, ONE candidate is fine.
+Candidates are tried in order. First successful execution wins.
 
 ## Defensive Patterns
 
