@@ -1,14 +1,21 @@
-"""Orchestrator: main loop that coordinates all agents.
+"""Orchestrator: unified loop coordinating all agents.
 
 Pipeline:
-  Profiler → Analyzer → QuestionAnalyzer → Loop(Planner → Coder → Sandbox → Judge) → Finalizer
+  Profiler → Analyzer → Loop(PlannerCoder → Sandbox → Judge) → Skeptic → Finalizer
 
-Workspace files provide observability and smart context retrieval.
+Design principles:
+- Single unified loop handles both simple (1-step SQL) and complex (multi-step Python) tasks.
+- PlannerCoder generates plan + multiple code candidates in one LLM call.
+- Sandbox tries candidates in order — first success wins.
+- Judge decides: finish / continue / backtrack.
+- Skeptic provides adversarial verification before final output.
+- Workspace files provide observability (write-only during execution).
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -37,8 +44,11 @@ from ..core.types import (
 from ..core.workspace import Workspace
 from ..profiler import manifest as profiler
 from ..profiler.manifest import manifest_to_json
-from . import analyzer, planner, coder, judge, debugger, finalizer, question_analyzer, decomposer
+from . import analyzer, judge, debugger, finalizer, skeptic
+from .planner_coder import generate as planner_coder_generate, PlannerCoderOutput
 from .code_validator import validate_column_references
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -77,6 +87,7 @@ def run_task(
     max_retries = config.get("agent", {}).get("max_retries", 2)
     backtrack_limit = config.get("agent", {}).get("backtrack_limit", 3)
     stagnation_threshold = config.get("agent", {}).get("stagnation_threshold", 2)
+    enable_skeptic = config.get("agent", {}).get("enable_skeptic", True)
 
     # Initialize tracer for real-time progress + LLM I/O logging
     tracer = TaskTracer(task_id, output_dir, session_id=session_id)
@@ -98,35 +109,37 @@ def run_task(
     obs: dict[str, Any] = {
         "profiler": {},
         "analyzer": {},
-        "question_analyzer": {},
         "iterations": [],
+        "skeptic": {},
         "final": {},
     }
 
     try:
-        # 1. Profile (deterministic, no LLM)
+        # ─── Stage 1: Profile (deterministic, zero LLM cost) ───
         with tracer.span("profiler"):
             _log(trace, "profiler", "Scanning task directory")
             manifest = profiler.scan(task_dir)
             manifest_json = manifest_to_json(manifest)
-            _log(trace, "profiler", f"Found {len(manifest.entries)} files, {len(manifest.cross_source_relations)} relations")
+            _log(trace, "profiler", f"Found {len(manifest.entries)} files, "
+                 f"{len(manifest.cross_source_relations)} relations")
 
         obs["profiler"] = {
             "files_found": len(manifest.entries),
             "file_types": sorted({e.file_type for e in manifest.entries}),
             "cross_source_relations": len(manifest.cross_source_relations),
             "total_size_bytes": sum(e.size_bytes for e in manifest.entries),
-            "coverage_signal": "complete" if manifest.entries else "empty",
         }
 
-        # 2. Analyze (deep profiling via code + domain rule extraction)
+        # ─── Stage 2: Analyze (deep profiling + domain rule extraction) ───
         with tracer.span("analyzer"):
             _log(trace, "analyzer", "Running deep data analysis")
-            data_profile, domain_rules_raw = analyzer.analyze(manifest, traced_llm, sandbox)
-            _log(trace, "analyzer", f"Profile: {len(data_profile)} chars, domain rules: {len(domain_rules_raw)} chars")
+            data_profile, domain_rules_raw = analyzer.analyze(
+                manifest, traced_llm, sandbox,
+            )
+            _log(trace, "analyzer", f"Profile: {len(data_profile)} chars, "
+                 f"domain rules: {len(domain_rules_raw)} chars")
 
-        # 2b. Compile domain rules if they exceed budget fraction
-        # Layer 1 compilation: recall-priority, question-agnostic
+        # Compile domain rules if they exceed budget fraction
         with tracer.span("domain_compiler"):
             domain_rules = analyzer.compile_domain_rules(
                 domain_rules_raw, traced_llm, cm.budget_tokens,
@@ -134,167 +147,144 @@ def run_task(
             if len(domain_rules) < len(domain_rules_raw):
                 _log(trace, "domain_compiler",
                      f"Compiled: {len(domain_rules_raw)} → {len(domain_rules)} chars")
-            else:
-                _log(trace, "domain_compiler", "No compilation needed")
 
-        # Write to workspace for file-based access
         workspace.write_domain_rules(domain_rules)
         workspace.write_data_profile(data_profile)
 
         obs["analyzer"] = {
             "profile_length_chars": len(data_profile),
             "domain_rules_length_chars": len(domain_rules),
-            "domain_rules_raw_chars": len(domain_rules_raw),
-            "domain_rules_compiled": len(domain_rules) < len(domain_rules_raw),
             "analysis_success": len(data_profile) > 50,
-            "profile_quality": "rich" if len(data_profile) > 500 else ("sparse" if len(data_profile) > 50 else "failed"),
         }
 
-        # 3. Initialize AnalysisState (still used for compatibility)
-        state = create_initial_state(task_id, question, manifest, data_profile, domain_rules)
+        # ─── Stage 3: Initialize state ───
+        state = create_initial_state(
+            task_id, question, manifest, data_profile, domain_rules,
+        )
 
-        # 4a. Decomposer: single-purpose constraint isolation before any strategy
-        with tracer.span("decomposer"):
-            _log(trace, "decomposer", "Decomposing question into sub-questions")
-            decomposition = decomposer.decompose(
-                question, state.manifest_summary, domain_rules_raw, traced_llm,
-            )
-            _log(trace, "decomposer",
-                 f"Decomposed into {len(decomposition.sub_questions)} sub-question(s)")
-            if decomposition.validation_warnings:
-                for w in decomposition.validation_warnings:
-                    _log(trace, "decomposer", f"WARNING: {w}")
-
-        # 4b. QuestionAnalyzer: strategic analysis given pre-committed decomposition
-        with tracer.span("question_analyzer"):
-            _log(trace, "question_analyzer", "Analyzing question strategy")
-            analysis_plan = question_analyzer.analyze_question(
-                question, state.manifest_summary, workspace, traced_llm,
-                decomposition=decomposition.raw_text,
-            )
-            _log(trace, "question_analyzer", f"Analysis plan: {len(analysis_plan)} chars")
-
-        obs["question_analyzer"] = {
-            "sub_questions": len(decomposition.sub_questions),
-            "plan_length_chars": len(analysis_plan),
-            "plan_generated": len(analysis_plan) > 50,
-        }
-
-        # Inject decomposition + strategy into state.
-        # Simple questions (single sub-question) don't need the full strategy plan —
-        # the decomposition JSON alone provides sufficient constraint grounding.
-        is_simple_question = len(decomposition.sub_questions) <= 1
-        if is_simple_question:
-            combined_analysis = decomposition.raw_text
-            _log(trace, "orchestrator", "Simple question: storing decomposition only (no QA plan)")
-        else:
-            combined_analysis = decomposition.raw_text + "\n\n---\n\n" + analysis_plan
-        state = set_question_analysis(state, combined_analysis)
-
-        # Keep legacy steps_done for TaskResult output
+        # Track execution state
         steps_done: list[StepRecord] = []
         backtracks_used = 0
         stagnation_count = 0
         strategy_changes_used = 0
-        max_strategy_changes = 1  # allow one forced pivot, then stop
-
-        # Track judge guidance for planner
+        max_strategy_changes = 1
         judge_guidance = ""
 
-        # 5. Incremental plan-code-verify loop
+        # ─── Stage 4: Unified Loop ───
         for iteration in range(max_iterations):
             tracer.set_iteration(iteration, max_iterations)
             _log(trace, "iteration", f"--- Iteration {iteration} ---")
             iter_obs: dict[str, Any] = {"iteration": iteration}
 
-            # QA fade: at iteration 2, drop the step-by-step strategy (stale after 2 rounds).
-            # Keep only the decomposition JSON — still valid for constraint grounding.
-            if iteration == 2 and state.question_analysis and "\n\n---\n\n" in state.question_analysis:
-                decomp_only = state.question_analysis.split("\n\n---\n\n")[0]
-                state = set_question_analysis(state, decomp_only)
-                _log(trace, "orchestrator", "QA fade: dropped step strategy, keeping decomposition JSON")
-
-            # Update judge guidance from prior iteration
+            # Update state with judge guidance from prior iteration
             if judge_guidance:
                 state = update_judge_guidance(state, judge_guidance)
                 workspace.write_judge_guidance(judge_guidance)
 
-            # Plan next step
-            with tracer.span("planner", metadata={"iteration": iteration}):
-                _log(trace, "planner", "Planning next step")
-                plan_step = planner.plan_next(
-                    question, manifest_json, data_profile, steps_done, traced_llm,
-                    state=state, cm=cm,
+            # ── PlannerCoder: plan + generate code candidates ──
+            with tracer.span("planner_coder", metadata={"iteration": iteration}):
+                _log(trace, "planner_coder", "Planning and generating code")
+                pc_output = planner_coder_generate(
+                    question, manifest_json, data_profile, steps_done,
+                    traced_llm, state=state, cm=cm,
                 )
-            _log(trace, "planner", f"Plan: {plan_step.step_description}")
-            iter_obs["plan_description"] = plan_step.step_description
-            iter_obs["plan_sources"] = list(plan_step.data_sources)
+            _log(trace, "planner_coder",
+                 f"Plan: {pc_output.plan.step_description} | "
+                 f"Language: {pc_output.language} | "
+                 f"Candidates: {len(pc_output.candidates)}")
 
-            # Generate code
-            with tracer.span("coder", metadata={"iteration": iteration}):
-                _log(trace, "coder", "Generating code")
-                code = coder.generate(plan_step, manifest_json, steps_done, traced_llm, state=state, cm=cm)
-            _log(trace, "coder", f"Code length: {len(code)} chars")
+            iter_obs["plan_description"] = pc_output.plan.step_description
+            iter_obs["language"] = pc_output.language
+            iter_obs["num_candidates"] = len(pc_output.candidates)
 
-            # Pre-execution validation: check column references against manifest
-            annotated_code, col_warnings = validate_column_references(code, manifest)
-            if col_warnings:
-                _log(trace, "code_validator", f"Column warnings: {col_warnings}")
-                code = annotated_code
-                iter_obs["column_warnings"] = col_warnings
-
-            # Execute
+            # ── Execute candidates in order ──
+            result: SandboxResult | None = None
+            winning_code = ""
             step_id = f"step_{iteration}"
-            with tracer.span("sandbox", metadata={"step_id": step_id}):
-                _log(trace, "sandbox", f"Executing {step_id}")
-                result = sandbox.execute(code, step_id=step_id)
-            _log(trace, "sandbox", f"rc={result.return_code}, stdout={len(result.stdout)} chars")
 
-            debug_retries = 0
-            if result.return_code != 0:
-                _log(trace, "debugger", f"Code failed: {result.stderr[:200]}")
+            for ci, candidate_code in enumerate(pc_output.candidates):
+                # Pre-execution validation
+                annotated_code, col_warnings = validate_column_references(
+                    candidate_code, manifest,
+                )
+                if col_warnings:
+                    _log(trace, "code_validator", f"Candidate {ci} warnings: {col_warnings}")
+                    candidate_code = annotated_code
+
+                with tracer.span("sandbox", metadata={"step_id": step_id, "candidate": ci}):
+                    candidate_result = sandbox.execute(
+                        candidate_code, step_id=f"{step_id}_c{ci}",
+                    )
+
+                if candidate_result.return_code == 0:
+                    result = candidate_result
+                    winning_code = candidate_code
+                    _log(trace, "sandbox",
+                         f"Candidate {ci} succeeded (rc=0, "
+                         f"{len(candidate_result.stdout)} chars output)")
+                    break
+                else:
+                    _log(trace, "sandbox",
+                         f"Candidate {ci} failed: {candidate_result.stderr[:200]}")
+
+            # If all candidates failed, try debugger on the first one
+            if result is None or result.return_code != 0:
+                # Use first candidate as base for debugging
+                base_code = pc_output.candidates[0] if pc_output.candidates else ""
+                base_result = result or SandboxResult(
+                    stdout="", stderr="No candidates generated",
+                    return_code=-1, execution_time_ms=0, step_id=step_id,
+                )
+
                 previous_attempts: list[tuple[str, str]] = []
                 for retry in range(max_retries):
-                    debug_retries += 1
                     with tracer.span("debugger", metadata={"retry": retry}):
                         fixed_code = debugger.fix(
-                            code, result, manifest_json, data_profile, traced_llm,
-                            state=state, cm=cm,
+                            base_code, base_result, manifest_json, data_profile,
+                            traced_llm, state=state, cm=cm,
                             retry_number=retry,
                             previous_attempts=previous_attempts,
                         )
-                    new_result = sandbox.execute(fixed_code, step_id=f"{step_id}_retry_{retry}")
+                    new_result = sandbox.execute(
+                        fixed_code, step_id=f"{step_id}_fix{retry}",
+                    )
                     _log(trace, "debugger", f"Retry {retry}: rc={new_result.return_code}")
                     previous_attempts.append((fixed_code[:500], new_result.stderr[:300]))
-                    result = new_result
-                    if result.return_code == 0:
-                        code = fixed_code
-                        break
 
-            # Write step to workspace (observability)
-            workspace.write_step(iteration, code, result.stdout)
+                    if new_result.return_code == 0:
+                        result = new_result
+                        winning_code = fixed_code
+                        break
+                    base_code = fixed_code
+                    base_result = new_result
+
+                # If still failing after retries, use the last result
+                if result is None or result.return_code != 0:
+                    result = base_result
+                    winning_code = base_code
+
+            # Write step to workspace
+            workspace.write_step(iteration, winning_code, result.stdout)
 
             iter_obs["code_success"] = result.return_code == 0
-            iter_obs["debug_retries"] = debug_retries
             iter_obs["exec_time_ms"] = result.execution_time_ms
             iter_obs["stdout_preview"] = result.stdout[:200].strip()
-            iter_obs["stderr_preview"] = result.stderr[:200].strip() if result.return_code != 0 else ""
 
+            # Record step
             step_record = StepRecord(
-                plan=plan_step,
-                code=code,
+                plan=pc_output.plan,
+                code=winning_code,
                 result=result,
                 step_index=iteration,
             )
             steps_done.append(step_record)
 
-            # Update state with compressed finding
+            # Update state
             finding = summarize_step_output(result.stdout)
             state = add_step(state, step_record, finding)
-            workspace.append_progress(iteration, plan_step.step_description, finding)
+            workspace.append_progress(iteration, pc_output.plan.step_description, finding)
 
-
-            # Judge: combined sufficiency check + routing + guidance (single LLM call)
+            # ── Judge: sufficiency + routing + guidance ──
             with tracer.span("judge", metadata={"iteration": iteration}):
                 _log(trace, "judge", "Evaluating progress")
                 verdict = judge.evaluate(
@@ -302,37 +292,34 @@ def run_task(
                     state=state, cm=cm,
                     iteration=iteration, max_iterations=max_iterations,
                 )
-            _log(trace, "judge", f"sufficient={verdict.sufficient}, action={verdict.action}, missing={verdict.missing}")
+            _log(trace, "judge",
+                 f"sufficient={verdict.sufficient}, action={verdict.action}, "
+                 f"missing={verdict.missing}")
 
             iter_obs["judge_sufficient"] = verdict.sufficient
             iter_obs["judge_action"] = verdict.action
             iter_obs["judge_reasoning"] = verdict.reasoning
-            iter_obs["judge_missing"] = verdict.missing
             iter_obs["judge_guidance"] = verdict.guidance_for_next_step
             obs["iterations"].append(iter_obs)
 
-            # Store guidance for next iteration's planner
+            # Store guidance for next iteration
             prev_guidance = judge_guidance
             judge_guidance = verdict.guidance_for_next_step
 
+            # ── Loop control ──
             if verdict.action == "finish":
                 if iteration < min_iterations - 1:
                     _log(trace, "orchestrator",
                          f"Overriding premature finish at iteration {iteration} "
-                         f"(min_iterations={min_iterations}). Forcing continue.")
-                    verdict = JudgeDecision(
-                        sufficient=False,
-                        action="continue",
-                        reasoning="Overridden: must verify results before concluding",
-                        guidance_for_next_step=(
-                            verdict.missing
-                            or "Verify the results: cross-check against the data, "
-                            "confirm row counts, and validate any assumptions made."
-                        ),
+                         f"(min_iterations={min_iterations})")
+                    judge_guidance = (
+                        verdict.missing
+                        or "Verify the results: cross-check against the data, "
+                        "confirm row counts, and validate assumptions."
                     )
-                    judge_guidance = verdict.guidance_for_next_step
                 else:
                     break
+
             elif verdict.action == "backtrack" and backtracks_used < backtrack_limit:
                 truncate_to = max(0, min(verdict.truncate_to, len(steps_done) - 1))
                 steps_done = steps_done[:truncate_to]
@@ -341,11 +328,9 @@ def run_task(
                 stagnation_count = 0
                 judge_guidance = ""
                 _log(trace, "judge", f"Backtracked to step {truncate_to}")
+
             else:
-                # Stagnation detection — two distinct cases with different responses:
-                # 1. code_failed: strategy is wrong → force pivot
-                # 2. guidance_repeated: judge keeps saying same missing data
-                #    → data likely doesn't exist, accept current best result
+                # Stagnation detection
                 step_failed = result.return_code != 0
                 guidance_repeated = (
                     prev_guidance
@@ -354,46 +339,93 @@ def run_task(
                 )
 
                 if guidance_repeated and not step_failed:
-                    # Judge is stuck on the same missing info — data doesn't exist.
-                    # Don't waste iterations forcing strategy changes. Finalize now.
                     _log(trace, "orchestrator",
-                         "Guidance repeated without code failure — data likely unavailable. "
-                         "Accepting current best result.")
+                         "Guidance repeated without code failure — "
+                         "accepting current result.")
                     break
 
                 if step_failed:
                     stagnation_count += 1
-                    _log(trace, "orchestrator", f"Stagnation signal: code_failed (count={stagnation_count})")
                 else:
                     stagnation_count = 0
 
                 if stagnation_count >= stagnation_threshold:
                     if strategy_changes_used >= max_strategy_changes:
                         _log(trace, "orchestrator",
-                             f"Early stop: stagnation persists after "
-                             f"{strategy_changes_used} strategy changes")
+                             "Early stop: stagnation persists after strategy change")
                         break
                     strategy_changes_used += 1
                     _log(trace, "orchestrator",
-                         f"Stagnation detected ({stagnation_count} code failures). "
-                         f"Forcing strategy change #{strategy_changes_used}.")
+                         f"Forcing strategy change #{strategy_changes_used}")
                     judge_guidance = (
-                        f"MANDATORY STRATEGY CHANGE: The previous approach has failed "
-                        f"{stagnation_count} consecutive times. You MUST use a completely "
-                        f"different strategy. Do NOT repeat the same type of code, query, "
-                        f"or filtering logic. Try: different column names, different join "
-                        f"strategy, alternative data loading method, or re-read the raw "
-                        f"data from scratch."
+                        "MANDATORY STRATEGY CHANGE: The previous approach has failed "
+                        f"{stagnation_count} consecutive times. Use a completely "
+                        "different strategy — different columns, different joins, "
+                        "different data loading method, or re-read raw data."
                     )
-                    stagnation_count = 0  # clean window for new strategy
-                    # Clear QA plan — if we're stuck, the initial analysis was wrong.
-                    # Free the planner from its bias so judge_guidance takes full control.
+                    stagnation_count = 0
                     state = set_question_analysis(state, "")
 
-        # 6. Finalize
+        # ─── Stage 5: Skeptic (adversarial verification) ───
+        skeptic_result = {"likely_wrong": False, "concern": ""}
+        if enable_skeptic and steps_done:
+            with tracer.span("skeptic"):
+                # Get the best answer so far for skeptic review
+                pre_answer = finalizer.format_answer(
+                    question, steps_done, traced_llm,
+                    state=state, cm=cm, benchmark=benchmark,
+                    guidelines=guidelines,
+                )
+                answer_str = json.dumps(pre_answer, ensure_ascii=False)
+                skeptic_result = skeptic.check(question, answer_str, traced_llm)
+                _log(trace, "skeptic",
+                     f"likely_wrong={skeptic_result['likely_wrong']}, "
+                     f"concern='{skeptic_result.get('concern', '')}'")
+
+        obs["skeptic"] = skeptic_result
+
+        # If skeptic flags concern, run one more iteration with guidance
+        if skeptic_result.get("likely_wrong") and steps_done:
+            concern = skeptic_result.get("concern", "")
+            _log(trace, "orchestrator",
+                 f"Skeptic flagged concern: {concern}. Running correction iteration.")
+            state = update_judge_guidance(
+                state,
+                f"SKEPTIC CONCERN: {concern}. "
+                "Re-examine your approach and fix the issue.",
+            )
+
+            with tracer.span("planner_coder", metadata={"iteration": "skeptic_retry"}):
+                pc_output = planner_coder_generate(
+                    question, manifest_json, data_profile, steps_done,
+                    traced_llm, state=state, cm=cm,
+                )
+
+            # Execute correction
+            for candidate_code in pc_output.candidates:
+                correction_result = sandbox.execute(
+                    candidate_code, step_id="skeptic_correction",
+                )
+                if correction_result.return_code == 0:
+                    step_record = StepRecord(
+                        plan=pc_output.plan,
+                        code=candidate_code,
+                        result=correction_result,
+                        step_index=len(steps_done),
+                    )
+                    steps_done.append(step_record)
+                    finding = summarize_step_output(correction_result.stdout)
+                    state = add_step(state, step_record, finding)
+                    break
+
+        # ─── Stage 6: Finalizer ───
         with tracer.span("finalizer"):
-            _log(trace, "finalizer", "Formatting answer")
-            answer = finalizer.format_answer(question, steps_done, traced_llm, state=state, cm=cm, benchmark=benchmark, guidelines=guidelines)
+            _log(trace, "finalizer", "Formatting final answer")
+            answer = finalizer.format_answer(
+                question, steps_done, traced_llm,
+                state=state, cm=cm, benchmark=benchmark,
+                guidelines=guidelines,
+            )
         _log(trace, "finalizer", f"Answer columns: {list(answer.keys())}")
 
         elapsed = time.time() - start_time
@@ -405,16 +437,9 @@ def run_task(
             "answer_columns": list(answer.keys()),
             "answer_rows": len(next(iter(answer.values()), [])) if answer else 0,
             "success": True,
-            "total_debug_retries": sum(i.get("debug_retries", 0) for i in obs["iterations"]),
-            "code_failures": sum(1 for i in obs["iterations"] if not i.get("code_success", True)),
-            "early_judge_exit": (
-                len(obs["iterations"]) <= 2
-                and any(i.get("judge_sufficient") for i in obs["iterations"])
-            ),
-            "stagnation_stops": stagnation_count >= stagnation_threshold,
+            "skeptic_flagged": skeptic_result.get("likely_wrong", False),
         }
 
-        # Persist workspace for post-run observability
         workspace.persist()
         tracer.set_observations(obs)
         tracer.finish(success=True)
@@ -436,7 +461,7 @@ def run_task(
         elapsed = time.time() - start_time
         _log(trace, "error", str(e))
         obs["final"] = {"success": False, "error": str(e)}
-        workspace.persist()  # persist even on failure for debugging
+        workspace.persist()
         tracer.set_observations(obs)
         tracer.finish(success=False, error=str(e))
         return TaskResult(

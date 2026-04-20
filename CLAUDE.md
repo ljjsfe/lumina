@@ -25,19 +25,20 @@ Input (task dir)
     │
 Profiler (deterministic, zero LLM cost) → Manifest
     │
-Analyzer (deep profiling via code execution) → DataProfile
+Analyzer (deep profiling via code execution) → DataProfile + DomainRules
     │
-Loop (max 13 iterations):
-    Planner → plan ONE next step (receives Judge guidance)
-    Coder   → step → Python code
-    Sandbox → execute (persistent state across steps)
-        └─ error → Debugger → retry (max 3)
-    Judge   → sufficiency + routing + guidance (single LLM call)
-        ├─ finish    → Finalizer → Output
-        ├─ continue  → loop (guidance passed to next Planner call)
+Loop (max 8 iterations):
+    PlannerCoder → plan + code candidates (SQL or Python) in ONE call
+    Sandbox      → try candidates in order, first success wins
+        └─ all fail → Debugger → retry (max 2)
+    Judge        → sufficiency + shape verification + routing + guidance
+        ├─ finish    → exit loop
+        ├─ continue  → loop (guidance passed to next PlannerCoder call)
         └─ backtrack → truncate to step N, re-plan
     │
-Synthesizer → prediction.csv + trace.json
+Sanity Check (deterministic) → Skeptic (adversarial, 1 call) → Finalizer
+    │
+prediction.csv + trace.json
 ```
 
 ---
@@ -47,12 +48,12 @@ Synthesizer → prediction.csv + trace.json
 | Agent | File | Role |
 |-------|------|------|
 | Analyzer | `dataline/agents/analyzer.py` | Generates + executes profiling scripts per file |
-| Planner | `dataline/agents/planner.py` | Plans ONE next step (receives Judge guidance) |
-| Coder | `dataline/agents/coder.py` | Converts plan step → executable Python |
-| Judge | `dataline/agents/judge.py` | Sufficiency + routing + guidance (single call, replaces Verifier+Router) |
+| PlannerCoder | `dataline/agents/planner_coder.py` | Plans + generates code (SQL/Python) candidates in ONE call |
+| Judge | `dataline/agents/judge.py` | Sufficiency + shape verification + routing + guidance |
 | Debugger | `dataline/agents/debugger.py` | Fixes code using traceback + data context |
+| Skeptic | `dataline/agents/skeptic.py` | Adversarial verification (question vs answer only, fail-open) |
 | Finalizer | `dataline/agents/finalizer.py` | Formats results → prediction.csv |
-| Orchestrator | `dataline/agents/orchestrator.py` | Main loop wiring all agents |
+| Orchestrator | `dataline/agents/orchestrator.py` | Unified loop wiring all agents |
 
 ---
 
@@ -60,9 +61,12 @@ Synthesizer → prediction.csv + trace.json
 
 | Decision | Rationale |
 |----------|-----------|
-| Incremental planning | DS-STAR proves 15-20% accuracy gain over one-shot |
-| Persistent sandbox state | Never re-execute completed steps (IBM OpenDsStar) |
-| Debugger uses data context | Fix rate improves significantly with schema info |
+| PlannerCoder merged | Same reasoning process shouldn't be split — avoids info loss between plan→code |
+| Multi-candidate output | LLM outputs 2-3 code candidates per call; try in order, first success wins (free) |
+| SQL-first for structured data | SQL is declarative and precise; LLM generates correct SQL at higher rate than pandas |
+| Skeptic (adversarial) | Separate evaluator sees only question+answer, not code — prevents rationalization |
+| Shape verification in Judge | Catches partial results: answer shape must match question type (scalar/list/table) |
+| Persistent sandbox state | Never re-execute completed steps |
 | Profiler is zero LLM cost | Deterministic, testable, saves tokens |
 | No framework (no LangChain) | ~3000 lines of Python, no overhead |
 | Immutable data types | Frozen dataclasses only, no mutation |

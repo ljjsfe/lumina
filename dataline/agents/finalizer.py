@@ -11,8 +11,6 @@ from ..core.llm_client import LLMClient
 
 from ..core.token_estimator import cap_text
 from ..core.types import AnalysisState, StepRecord
-from . import post_processor
-
 
 def format_answer(
     question: str,
@@ -55,12 +53,7 @@ def _format_kdd(
     if structured is not None:
         return structured
 
-    # --- Path 2: JSON in stdout ---
-    direct = _try_direct_extract(steps_done, state)
-    if direct is not None:
-        return post_processor.post_process(direct, state)
-
-    # --- Path 3: LLM formatting ---
+    # --- Path 2: LLM formatting ---
     prompt_path = Path(__file__).parent.parent / "prompts" / "finalizer.md"
     template = prompt_path.read_text(encoding="utf-8")
 
@@ -85,8 +78,8 @@ def _format_kdd(
     try:
         data = json.loads(_extract_json(response))
         if "columns" in data:
-            return post_processor.post_process(data["columns"], state)
-        return post_processor.post_process(data, state)
+            return data["columns"]
+        return data
     except (json.JSONDecodeError, ValueError):
         return _fallback_extract(steps_done, state)
 
@@ -200,56 +193,6 @@ def _try_structured_extract(state: AnalysisState | None) -> dict | None:
                 return answer
     return None
 
-
-def _try_direct_extract(
-    steps_done: list[StepRecord],
-    state: AnalysisState | None,
-) -> dict | None:
-    """Try to extract a structured answer directly from the last successful stdout.
-
-    Returns a dict {"col": [values]} on success, None if LLM formatting is needed.
-
-    Only fires on unambiguous JSON structures — never guesses from free-text output.
-    Rejects stdout that looks like a raw DataFrame printout (aligned columns + index).
-    """
-    stdout = _last_successful_stdout(steps_done, state)
-    if stdout is None:
-        return None
-
-    # Reject raw DataFrame printouts: they look like "  col1  col2\n0  val  val"
-    # The LLM must extract actual values, not copy a formatted table.
-    if _looks_like_dataframe_printout(stdout):
-        return None
-
-    # Strategy: try parsing as JSON at two granularities (whole stdout, last line).
-    # Only accept dict-of-lists shapes that look like a table answer.
-    for candidate in _json_candidates(stdout):
-        try:
-            data = json.loads(candidate)
-        except (json.JSONDecodeError, ValueError):
-            continue
-        if not isinstance(data, dict):
-            continue
-        if "columns" in data and isinstance(data["columns"], dict):
-            return data["columns"]
-        if all(isinstance(v, list) for v in data.values()) and data:
-            return data
-
-    return None
-
-
-def _looks_like_dataframe_printout(stdout: str) -> bool:
-    """Heuristic: return True if stdout looks like a pandas DataFrame printout.
-
-    DataFrames have: integer index column on the left, aligned spacing, multiple rows.
-    This guards against the fast path copying a raw table repr instead of extracted values.
-    """
-    lines = [ln for ln in stdout.splitlines() if ln.strip()]
-    if len(lines) < 3:
-        return False
-    # Look for lines starting with integer index (e.g. "0  ", "1  ", "10  ")
-    index_lines = sum(1 for ln in lines if re.match(r"^\s*\d+\s{2,}", ln))
-    return index_lines >= 2
 
 
 def _try_direct_scalar_extract(

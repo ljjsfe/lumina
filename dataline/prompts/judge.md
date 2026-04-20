@@ -41,13 +41,33 @@ FAIL if yes.
 
 If all three checks pass → proceed to Step 3.
 
-### Step 3 — Iteration Leniency
+### Step 3 — Shape Verification (CRITICAL)
+
+Match the answer's shape against the question's requirements:
+
+| Question type | Required shape | Example |
+|---|---|---|
+| "How many..." / "What is the total..." | Single scalar (1 value) | 42 |
+| "What is the X of Y?" | Single scalar | 0.85 |
+| "List the..." / "Which..." (plural) | Multiple values (1 column, N rows) | [A, B, C] |
+| "What are X and Y?" | Multiple columns (1 row each) | {X: [val], Y: [val]} |
+| "For each..." / "per..." | Table (N rows × M columns) | {name: [...], value: [...]} |
+
+**FAIL if**:
+- Question asks for a list but answer is a single scalar
+- Question asks for a scalar but answer has multiple rows
+- Question asks for 3 metrics but only 2 are present
+- Answer has extra unrequested columns (penalty in scoring)
+
+If shape mismatch → set `sufficient: false`, action "continue", and specify in guidance exactly what's wrong.
+
+### Step 4 — Iteration Leniency
 
 - Iterations 0 to {max_iterations_minus_2}: apply checks strictly.
 - Final 2 iterations (>= {max_iterations_minus_2}): be lenient. If there is a reasonable computed value in stdout that partially answers the question, choose "finish". Accept incomplete answers rather than iterating further.
 - Last iteration ({max_iterations_minus_1}): choose "finish" unless there is an obvious logic error.
 
-### Step 4 — Domain Rule Verification (skip if no domain rules in context)
+### Step 5 — Domain Rule Verification (skip if no domain rules in context)
 
 If domain rules are present:
 - Does the code follow the documented formula exactly?
@@ -57,7 +77,7 @@ If domain rules are present:
 ---
 
 ## Actions
-- **"finish"**: All blocking checks pass and the answer is visible in stdout.
+- **"finish"**: All blocking checks pass, shape matches, and the answer is visible in stdout.
 - **"continue"**: Making progress but more work needed. Provide specific guidance for the next step.
 - **"backtrack"**: A prior step used wrong logic (inverted filter, wrong column, wrong join). Set `truncate_to` to the step index to keep before (0 = restart from scratch).
 
@@ -74,7 +94,7 @@ If the Pre-check Flags include a `ZERO_ROWS` flag on a **computation** step (not
   "quoted_answer": "exact value/text from stdout answering the question, or 'no answer found'",
   "sufficient": true,
   "action": "finish",
-  "reasoning": "Brief explanation referencing your check results",
+  "reasoning": "Brief explanation referencing check results and shape verification",
   "missing": "",
   "guidance_for_next_step": "",
   "truncate_to": 0

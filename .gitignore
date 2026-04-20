@@ -31,3 +31,4 @@ run_dev_eval_complete.py
 
 # Claude internal
 .claude/
+KDD-Competition/

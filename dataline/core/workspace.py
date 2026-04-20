@@ -29,9 +29,8 @@ class Workspace:
 
     Lifecycle:
     1. Created in temp_dir (sandbox-accessible)
-    2. Agents write state files during execution
-    3. Agents read via get_context() — smart retrieval, not full dump
-    4. On completion, persist() copies to output_dir/workspace/
+    2. Agents write state files during execution (write-only during pipeline)
+    3. On completion, persist() copies to output_dir/workspace/ for observability
     """
 
     def __init__(self, temp_dir: str, output_dir: str = ""):
@@ -71,29 +70,6 @@ class Workspace:
         """Write current judge guidance (overwritten each iteration)."""
         self._write("JUDGE_GUIDANCE.md", guidance)
 
-    # --- Read methods (called by agents via get_context) ---
-
-    def read_domain_rules(self) -> str:
-        return self._read("DOMAIN_RULES.md")
-
-    def read_data_profile(self) -> str:
-        return self._read("DATA_PROFILE.md")
-
-    def read_analysis_plan(self) -> str:
-        return self._read("ANALYSIS_PLAN.md")
-
-    def read_progress(self) -> str:
-        return self._read("PROGRESS.md")
-
-    def read_judge_guidance(self) -> str:
-        return self._read("JUDGE_GUIDANCE.md")
-
-    def read_step_output(self, step_idx: int) -> str:
-        return self._read(f"steps/step_{step_idx}_output.txt")
-
-    def read_step_code(self, step_idx: int) -> str:
-        return self._read(f"steps/step_{step_idx}_code.py")
-
     # --- Persistence ---
 
     def persist(self) -> None:
@@ -112,12 +88,5 @@ class Workspace:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             f.write(content)
-
-    def _read(self, rel_path: str) -> str:
-        path = os.path.join(self._workspace_dir, rel_path)
-        if not os.path.exists(path):
-            return ""
-        with open(path, "r", encoding="utf-8") as f:
-            return f.read()
 
 
