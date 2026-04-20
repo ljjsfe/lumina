@@ -191,11 +191,13 @@ def run_task(
             _log(trace, "planner_coder",
                  f"Plan: {pc_output.plan.step_description} | "
                  f"Language: {pc_output.language} | "
-                 f"Candidates: {len(pc_output.candidates)}")
+                 f"Candidates: {len(pc_output.candidates)} | "
+                 f"Reasoning: {pc_output.reasoning[:100]}")
 
             iter_obs["plan_description"] = pc_output.plan.step_description
             iter_obs["language"] = pc_output.language
             iter_obs["num_candidates"] = len(pc_output.candidates)
+            iter_obs["reasoning"] = pc_output.reasoning
 
             # ── Execute candidates in order ──
             result: SandboxResult | None = None
@@ -203,6 +205,10 @@ def run_task(
             step_id = f"step_{iteration}"
 
             for ci, candidate_code in enumerate(pc_output.candidates):
+                # Detect candidate language for logging
+                is_sql_candidate = "duckdb" in candidate_code or "sqlite3" in candidate_code
+                candidate_lang = "sql" if is_sql_candidate else "python"
+
                 # Pre-execution validation
                 annotated_code, col_warnings = validate_column_references(
                     candidate_code, manifest,
@@ -211,7 +217,7 @@ def run_task(
                     _log(trace, "code_validator", f"Candidate {ci} warnings: {col_warnings}")
                     candidate_code = annotated_code
 
-                with tracer.span("sandbox", metadata={"step_id": step_id, "candidate": ci}):
+                with tracer.span("sandbox", metadata={"step_id": step_id, "candidate": ci, "lang": candidate_lang}):
                     candidate_result = sandbox.execute(
                         candidate_code, step_id=f"{step_id}_c{ci}",
                     )
@@ -220,12 +226,16 @@ def run_task(
                     result = candidate_result
                     winning_code = candidate_code
                     _log(trace, "sandbox",
-                         f"Candidate {ci} succeeded (rc=0, "
-                         f"{len(candidate_result.stdout)} chars output)")
+                         f"Candidate {ci} ({candidate_lang}) succeeded | "
+                         f"output: {len(candidate_result.stdout)} chars | "
+                         f"time: {candidate_result.execution_time_ms}ms")
+                    iter_obs["winning_candidate"] = ci
+                    iter_obs["winning_language"] = candidate_lang
                     break
                 else:
                     _log(trace, "sandbox",
-                         f"Candidate {ci} failed: {candidate_result.stderr[:200]}")
+                         f"Candidate {ci} ({candidate_lang}) failed: "
+                         f"{candidate_result.stderr[:200]}")
 
             # If all candidates failed, try debugger on the first one
             if result is None or result.return_code != 0:
@@ -431,6 +441,12 @@ def run_task(
         elapsed = time.time() - start_time
         usage = llm.total_usage
 
+        # Build execution path summary for diagnostics
+        execution_path = [
+            f"step_{i.get('iteration')}:{i.get('winning_language', i.get('language', '?'))}"
+            for i in obs["iterations"]
+        ]
+
         obs["final"] = {
             "total_iterations": len(obs["iterations"]),
             "backtracks_used": backtracks_used,
@@ -438,7 +454,13 @@ def run_task(
             "answer_rows": len(next(iter(answer.values()), [])) if answer else 0,
             "success": True,
             "skeptic_flagged": skeptic_result.get("likely_wrong", False),
+            "execution_path": execution_path,  # e.g., ["step_0:sql", "step_1:python"]
+            "languages_used": sorted({i.get("winning_language", i.get("language", "?")) for i in obs["iterations"]}),
         }
+        _log(trace, "summary",
+             f"Completed in {len(obs['iterations'])} iterations | "
+             f"Path: {' → '.join(execution_path)} | "
+             f"Skeptic: {'flagged' if skeptic_result.get('likely_wrong') else 'passed'}")
 
         workspace.persist()
         tracer.set_observations(obs)
